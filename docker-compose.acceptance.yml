@@ -1,0 +1,62 @@
+# Release verification only. Always use -p okr-release-acceptance with this overlay.
+# The separate project owns its own database volume/network; never apply to the review stack.
+name: okr-release-acceptance
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: release-fixture-only
+  migrate:
+    environment:
+      DATABASE_URL: postgresql://okr:release-fixture-only@db:5432/okr?schema=public
+      NODE_ENV: development
+      APP_URL: http://web
+      COOKIE_SECURE: 'false'
+      EMAIL_MODE: selfhosted
+      DISABLE_SIGNUP: 'true'
+  api:
+    environment:
+      DATABASE_URL: postgresql://okr:release-fixture-only@db:5432/okr?schema=public
+      NODE_ENV: test
+      APP_URL: http://web
+      COOKIE_SECURE: 'false'
+      EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+      DISABLE_SIGNUP: ${TEST_DISABLE_SIGNUP:-false}
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_USER: ''
+      SMTP_PASSWORD: ''
+      SMTP_SECURE: 'false'
+      MAIL_FROM: noreply@acceptance.example
+  worker:
+    environment:
+      DATABASE_URL: postgresql://okr:release-fixture-only@db:5432/okr?schema=public
+      NODE_ENV: development
+      APP_URL: http://web
+      COOKIE_SECURE: 'false'
+      EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+      DISABLE_SIGNUP: ${TEST_DISABLE_SIGNUP:-false}
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_USER: ''
+      SMTP_PASSWORD: ''
+      SMTP_SECURE: 'false'
+      MAIL_FROM: noreply@acceptance.example
+  tools:
+    environment:
+      DATABASE_URL: postgresql://okr:release-fixture-only@db:5432/okr?schema=public
+      NODE_ENV: development
+      APP_URL: http://web
+      COOKIE_SECURE: 'false'
+      EMAIL_MODE: selfhosted
+      DISABLE_SIGNUP: 'true'
+  browser:
+    environment:
+      DATABASE_URL: postgresql://okr:release-fixture-only@db:5432/okr?schema=public
+      TEST_DISABLE_SIGNUP: ${TEST_DISABLE_SIGNUP:-false}
+      TEST_EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+  web:
+    ports: !override
+      - 127.0.0.1:${RELEASE_WEB_PORT:-8091}:80
+  mailpit:
+    ports: !override
+      - 127.0.0.1:${RELEASE_MAIL_PORT:-18025}:8025

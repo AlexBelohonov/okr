@@ -1,0 +1,15 @@
+{
+  "name": "okr-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build -w @okr/shared && npm run build -w @okr/api && npm run build -w @okr/web",
+    "test": "npm run test -w @okr/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:integration": "npm run test:integration -w @okr/api",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": { "@playwright/test": "1.56.1", "typescript": "^5.9.3" },
+  "overrides": { "@prisma/config": { "deepmerge-ts": "^8.0.0" } }
+}

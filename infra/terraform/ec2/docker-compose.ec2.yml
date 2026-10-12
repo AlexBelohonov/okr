@@ -1,0 +1,28 @@
+# Last overlay: base + production + this file. All services run on ONE EC2.
+services:
+  db:
+    volumes: !override
+      - ${OKR_DATA_DIR:?Persistent mounted data path required}/postgres:/var/lib/postgresql
+  migrate:
+    environment:
+      NODE_ENV: production
+      COOKIE_SECURE: 'true'
+  caddy:
+    image: caddy:2.10.2-alpine
+    environment:
+      OKR_DOMAIN: ${OKR_DOMAIN:?Public hostname required}
+      ACME_EMAIL: ${ACME_EMAIL:?Certificate contact required}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/terraform/ec2/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${OKR_DATA_DIR:?}/caddy-data:/data
+      - ${OKR_DATA_DIR:?}/caddy-config:/config
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '3' }
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_started

@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.env
+artifacts
+test-results
+playwright-report
+**/.terraform
+**/*.tfstate*
+**/*.tfplan
+**/*.tfvars
+**/__pycache__

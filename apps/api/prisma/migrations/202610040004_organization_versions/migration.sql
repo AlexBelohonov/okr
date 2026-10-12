@@ -1,0 +1,3 @@
+ALTER TABLE "Organization" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1 CHECK ("version" > 0);
+ALTER TABLE "Membership" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1 CHECK ("version" > 0);
+ALTER TABLE "Team" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1 CHECK ("version" > 0);

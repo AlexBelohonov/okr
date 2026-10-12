@@ -1,0 +1,19 @@
+# Only use with -p okr-slack-acceptance and docker-compose.acceptance.yml.
+# No worker: browser fixtures must never contact real Slack.
+services:
+  api:
+    image: okr-slack-api
+    environment:
+      SLACK_ENCRYPTION_KEY: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  migrate:
+    image: okr-slack-api
+  tools:
+    image: okr-slack-tools
+    environment:
+      SLACK_ENCRYPTION_KEY: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  web:
+    image: okr-slack-web
+    ports: !override
+      - 127.0.0.1:8092:80
+  browser:
+    image: okr-slack-browser

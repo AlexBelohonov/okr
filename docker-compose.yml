@@ -1,0 +1,132 @@
+name: okr-workspace
+x-app: &app
+  image: okr-workspace-api
+  logging: &logs
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '3'
+  build:
+    context: .
+    target: api
+  environment: &env
+    DATABASE_URL: postgresql://okr:${POSTGRES_PASSWORD:-local-development-only}@db:5432/okr?schema=public
+    NODE_ENV: ${NODE_ENV:-development}
+    APP_URL: ${APP_URL:-http://localhost:8080}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    EMAIL_MODE: ${EMAIL_MODE:-selfhosted}
+    DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+    SMTP_HOST: ${SMTP_HOST:-mailpit}
+    SMTP_PORT: ${SMTP_PORT:-1025}
+    SMTP_USER: ${SMTP_USER:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_SECURE: ${SMTP_SECURE:-false}
+    MAIL_FROM: ${MAIL_FROM:-noreply@localhost}
+    SLACK_ENCRYPTION_KEY: ${SLACK_ENCRYPTION_KEY:-}
+services:
+  db:
+    image: postgres:18-alpine
+    logging: *logs
+    environment:
+      POSTGRES_USER: okr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      POSTGRES_DB: okr
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [ CMD-SHELL, 'pg_isready -U okr -d okr' ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: [ npm, run, migrate, -w, '@okr/api' ]
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ CMD, node, -e, 'fetch("http://localhost:3000/api/v1/ready").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))' ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  worker:
+    <<: *app
+    profiles: [ workers ]
+    command: [ npm, run, worker, -w, '@okr/api' ]
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  web:
+    image: okr-workspace-web
+    logging: *logs
+    build:
+      context: .
+      target: web
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  mailpit:
+    image: axllent/mailpit:v1.27
+    profiles: [ mail ]
+    ports:
+      - '127.0.0.1:8025:8025'
+  tools:
+    <<: *app
+    image: okr-workspace-tools
+    profiles: [ tools ]
+    build:
+      context: .
+      target: tools
+    volumes:
+      - .:/workspace
+    depends_on:
+      db:
+        condition: service_healthy
+  bootstrap:
+    image: okr-workspace-bootstrap
+    build:
+      context: .
+      target: base
+    profiles: [ tools ]
+    working_dir: /workspace
+    environment:
+      <<: *env
+      PRISMA_HIDE_UPDATE_MESSAGE: 'true'
+    volumes:
+      - .:/workspace
+      - development_modules:/workspace/node_modules
+    command: [ npm, ci ]
+  browser:
+    image: okr-workspace-browser
+    build:
+      context: .
+      target: browser-tests
+    profiles: [ test ]
+    environment:
+      BASE_URL: http://web
+      CI: 'true'
+      EVIDENCE_DIR: /evidence
+    volumes:
+      - ./artifacts:/evidence
+      - ./tests:/app/tests:ro
+      - ./playwright.config.ts:/app/playwright.config.ts:ro
+    depends_on:
+      web:
+        condition: service_started
+    init: true
+    shm_size: 1gb
+volumes:
+  postgres_data:
+  development_modules:

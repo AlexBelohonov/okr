@@ -1,0 +1,324 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  name String
+  passwordHash String
+  verified Boolean @default(false)
+  active Boolean @default(true)
+  platformAdmin Boolean @default(false)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  memberships Membership[]
+  sessions Session[]
+  tokens AuthToken[]
+  audits AuditEvent[]
+  checkIns CheckIn[]
+  comments Comment[]
+  notifications Notification[]
+}
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  csrf String
+  userId String @db.Uuid
+  expiresAt DateTime
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@index([userId])
+}
+model AuthToken {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  type String
+  userId String @db.Uuid
+  expiresAt DateTime
+  usedAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, type, usedAt])
+}
+model Organization {
+  id String @id @default(uuid()) @db.Uuid
+  version Int @default(1)
+  name String
+  timezone String @default("UTC")
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  memberships Membership[]
+  teams Team[]
+  periods Period[]
+  objectives Objective[]
+  links ObjectiveLink[]
+  invitations Invitation[]
+  audits AuditEvent[]
+  notifications Notification[]
+  slackIntegration SlackIntegration?
+}
+model Membership {
+  id String @id @default(uuid()) @db.Uuid
+  version Int @default(1)
+  orgId String @db.Uuid
+  userId String @db.Uuid
+  role String @default("member")
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+  teamMembers TeamMember[]
+  ledObjectives Objective[]
+  assignments Assignment[]
+  keyResults KeyResult[]
+  checkIns CheckIn[]
+  comments Comment[]
+  notifications Notification[]
+  objectivePreferences ObjectivePreference[]
+  @@unique([orgId, userId])
+  @@unique([orgId, id])
+}
+model Team {
+  id String @id @default(uuid()) @db.Uuid
+  version Int @default(1)
+  orgId String @db.Uuid
+  name String
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members TeamMember[]
+  objectives Objective[]
+  @@unique([orgId, id])
+  @@unique([orgId, name])
+}
+model TeamMember {
+  orgId String @db.Uuid
+  teamId String @db.Uuid
+  membershipId String @db.Uuid
+  manager Boolean @default(false)
+  team Team @relation(fields: [orgId, teamId], references: [orgId, id], onDelete: Cascade)
+  membership Membership @relation(fields: [orgId, membershipId], references: [orgId, id], onDelete: Cascade)
+  @@id([teamId, membershipId])
+}
+model Period {
+  id String @id @default(uuid()) @db.Uuid
+  version Int @default(1)
+  orgId String @db.Uuid
+  name String
+  startDate String @db.VarChar(10)
+  endDate String @db.VarChar(10)
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  objectives Objective[]
+  @@unique([orgId, id])
+  @@unique([orgId, name])
+}
+model Objective {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  title String
+  description String @default("")
+  scope String @default("personal")
+  teamId String? @db.Uuid
+  periodId String? @db.Uuid
+  startDate String @db.VarChar(10)
+  endDate String @db.VarChar(10)
+  leadId String @db.Uuid
+  progressMode String @default("key_results")
+  state String @default("active")
+  health String @default("on_track")
+  version Int @default(1)
+  finalScore Float?
+  closingNote String @default("")
+  dependencyOverrideNote String @default("")
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  lead Membership @relation(fields: [orgId, leadId], references: [orgId, id])
+  team Team? @relation(fields: [orgId, teamId], references: [orgId, id], onDelete: Restrict)
+  period Period? @relation(fields: [orgId, periodId], references: [orgId, id], onDelete: Restrict)
+  assignments Assignment[]
+  keyResults KeyResult[]
+  outgoing ObjectiveLink[] @relation("source")
+  incoming ObjectiveLink[] @relation("target")
+  checkIns CheckIn[]
+  comments Comment[]
+  audits AuditEvent[]
+  notifications Notification[]
+  preferences ObjectivePreference[]
+  slackDeliveries SlackDelivery[]
+  @@unique([orgId, id])
+  @@index([orgId, state, endDate])
+  @@index([orgId, leadId])
+  @@index([orgId, periodId])
+}
+model Assignment {
+  orgId String @db.Uuid
+  objectiveId String @db.Uuid
+  membershipId String @db.Uuid
+  role String
+  objective Objective @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Cascade)
+  membership Membership @relation(fields: [orgId, membershipId], references: [orgId, id])
+  @@id([objectiveId, membershipId])
+  @@index([orgId, membershipId])
+}
+model KeyResult {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  objectiveId String @db.Uuid
+  title String
+  type String @default("number")
+  baseline Float @default(0)
+  target Float @default(100)
+  current Float @default(0)
+  unit String @default("%")
+  weight Float @default(1)
+  ownerId String? @db.Uuid
+  version Int @default(1)
+  objective Objective @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Cascade)
+  owner Membership? @relation(fields: [orgId, ownerId], references: [orgId, id], onDelete: Restrict)
+  @@index([orgId, objectiveId])
+  @@index([orgId, ownerId])
+}
+model ObjectiveLink {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  sourceId String @db.Uuid
+  targetId String @db.Uuid
+  type String
+  weight Float @default(1)
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  source Objective @relation("source", fields: [orgId, sourceId], references: [orgId, id])
+  target Objective @relation("target", fields: [orgId, targetId], references: [orgId, id])
+  @@unique([orgId, sourceId, targetId, type])
+  @@index([orgId, type])
+  @@index([orgId, targetId, type])
+}
+model CheckIn {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  objectiveId String @db.Uuid
+  userId String @db.Uuid
+  note String
+  health String
+  progress Float
+  metrics Json
+  createdAt DateTime @default(now())
+  objective Objective @relation(fields: [orgId, objectiveId], references: [orgId, id])
+  user User @relation(fields: [userId], references: [id])
+  membership Membership @relation(fields: [orgId, userId], references: [orgId, userId])
+  @@index([orgId, objectiveId, createdAt])
+}
+model Comment {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  objectiveId String @db.Uuid
+  userId String @db.Uuid
+  text String
+  createdAt DateTime @default(now())
+  objective Objective @relation(fields: [orgId, objectiveId], references: [orgId, id])
+  user User @relation(fields: [userId], references: [id])
+  membership Membership @relation(fields: [orgId, userId], references: [orgId, userId])
+  @@index([orgId, objectiveId, createdAt])
+}
+model AuditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String? @db.Uuid
+  objectiveId String? @db.Uuid
+  userId String @db.Uuid
+  type String
+  text String
+  data Json @default("{}")
+  createdAt DateTime @default(now())
+  org Organization? @relation(fields: [orgId], references: [id])
+  objective Objective? @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id])
+  slackDelivery SlackDelivery?
+  @@unique([orgId, id])
+  @@index([orgId, createdAt])
+  @@index([objectiveId, createdAt])
+}
+model Invitation {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  email String
+  role String @default("member")
+  tokenHash String @unique
+  expiresAt DateTime
+  usedAt DateTime?
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  @@index([orgId, email])
+}
+model Notification {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  userId String @db.Uuid
+  objectiveId String? @db.Uuid
+  text String
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership Membership @relation(fields: [orgId, userId], references: [orgId, userId], onDelete: Cascade)
+  objective Objective? @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Restrict)
+  @@index([userId, orgId, createdAt])
+  @@index([orgId, userId, readAt])
+}
+model ObjectivePreference {
+  orgId String @db.Uuid
+  objectiveId String @db.Uuid
+  userId String @db.Uuid
+  enabled Boolean @default(true)
+  objective Objective @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Cascade)
+  membership Membership @relation(fields: [orgId, userId], references: [orgId, userId], onDelete: Cascade)
+  @@id([objectiveId, userId])
+  @@index([orgId, userId])
+}
+model EmailOutbox {
+  id String @id @default(uuid()) @db.Uuid
+  to String
+  subject String
+  text String
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  sentAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  @@index([sentAt, nextAttemptAt])
+}
+
+model SlackIntegration {
+  orgId String @id @db.Uuid
+  version Int @default(1)
+  webhookCiphertext String?
+  channelLabel String @default("")
+  enabled Boolean @default(false)
+  objectiveUpdates Boolean @default(true)
+  notifications Boolean @default(true)
+  nextSendAt DateTime @default(now())
+  lastSentAt DateTime?
+  lastError String?
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  deliveries SlackDelivery[]
+}
+
+model SlackDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  orgId String @db.Uuid
+  integrationVersion Int
+  objectiveId String? @db.Uuid
+  auditId String? @db.Uuid
+  kind String
+  payload Json
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  sentAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  integration SlackIntegration @relation(fields: [orgId], references: [orgId], onDelete: Cascade)
+  objective Objective? @relation(fields: [orgId, objectiveId], references: [orgId, id], onDelete: Cascade)
+  audit AuditEvent? @relation(fields: [orgId, auditId], references: [orgId, id], onDelete: Cascade)
+  @@unique([orgId, auditId])
+  @@index([sentAt, nextAttemptAt])
+}

@@ -1,0 +1,26 @@
+services:
+  api:
+    image: okr-workspace-bootstrap
+    build:
+      context: .
+      target: base
+    working_dir: /workspace
+    user: root
+    command: [npm, run, dev, -w, '@okr/api']
+    volumes:
+      - .:/workspace
+      - development_modules:/workspace/node_modules
+    restart: 'no'
+  web:
+    image: okr-workspace-bootstrap
+    build:
+      context: .
+      target: base
+    working_dir: /workspace
+    command: [npm, run, dev, -w, '@okr/web', --, --port, '80', --strictPort]
+    volumes:
+      - .:/workspace
+      - development_modules:/workspace/node_modules
+    environment:
+      VITE_POLLING: 'true'
+    restart: 'no'

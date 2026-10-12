@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+*.log
+test-results/
+playwright-report/
+artifacts/
+*.sql.gz
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+crash.log
+__pycache__/
+*.pyc

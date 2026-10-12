@@ -1,0 +1,17 @@
+# Isolated browser origin configuration; use only for local acceptance tests.
+services:
+  api:
+    environment:
+      APP_URL: http://web
+      EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+      NODE_ENV: test
+      DISABLE_SIGNUP: ${TEST_DISABLE_SIGNUP:-false}
+  worker:
+    environment:
+      APP_URL: http://web
+      EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+  browser:
+    environment:
+      TEST_DISABLE_SIGNUP: ${TEST_DISABLE_SIGNUP:-false}
+      TEST_EMAIL_MODE: ${TEST_EMAIL_MODE:-selfhosted}
+      DATABASE_URL: postgresql://okr:${POSTGRES_PASSWORD:-local-development-only}@db:5432/okr?schema=public

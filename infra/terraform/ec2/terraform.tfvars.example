@@ -1,0 +1,20 @@
+aws_region     = "us-east-1"
+name           = "okr"
+domain_name    = "okr.your-domain.com"
+acme_email     = "admin@your-domain.com"
+release_archive = "E:/project/okr/artifacts/okr-ec2.zip"
+
+# Optional: use an existing PUBLIC subnet instead of creating a VPC.
+# existing_public_subnet_id = "subnet-0123456789abcdef0"
+# Optional: manage the DNS record in an existing PUBLIC Route 53 hosted zone.
+# route53_zone_id = "Z0123456789ABC"
+
+instance_type  = "t3.medium"
+data_volume_gib = 40
+disable_signup = true
+email_mode     = "selfhosted"
+
+# SMTP secrets are fetched by EC2, not Terraform (no secret values in state/user-data).
+# email_mode = "smtp"
+# smtp_parameter_name = "/okr/smtp"
+# smtp_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/UUID"

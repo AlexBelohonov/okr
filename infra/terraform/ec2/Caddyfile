@@ -1,0 +1,20 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+				request>headers delete
+			}
+		}
+	}
+}
+
+{$OKR_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:80
+	header Strict-Transport-Security "max-age=31536000"
+	# Access logging stays disabled here; Nginx records query-free requests.
+}
