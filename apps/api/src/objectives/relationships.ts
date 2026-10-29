@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
-import { createsCycle, date, linkChangeSchema, linkWriteSchema, states } from '@okr/shared';
+import { createsCycle, date, linkChangeSchema, linkReconnectSchema, linkReparentSchema, linkWriteSchema, states } from '@okr/shared';
 import { db } from '../db.js';
 import { queueSlack } from '../slack/service.js';
 import { ApiError } from '../errors.js';
@@ -17,6 +17,9 @@ export async function finishRelationship(tx: Prisma.TransactionClient, actor: Ac
     const changed = type === 'alignment' ? [source.id, target.id] : [target.id];
     await tx.objective.updateMany({ where: { orgId: actor.orgId, id: { in: changed } }, data: { version: { increment: 1 }, updatedAt: new Date() } });
     await invalidateRelated(tx, actor.orgId, changed);
+    await auditRelationship(tx, actor, source, target, type, action, data);
+  }
+async function auditRelationship(tx: Prisma.TransactionClient, actor: Actor & { userId: string }, source: LoadedObjective, target: LoadedObjective, type: string, action: string, data: Prisma.InputJsonObject) {
     for (const objectiveId of [source.id, target.id]) {
       const entry = await tx.auditEvent.create({ data: { orgId: actor.orgId, userId: actor.userId, objectiveId, type: `relationship_${action}`, text: `${type === 'alignment' ? 'Alignment' : 'Prerequisite'} ${action}: ${source.title} → ${target.title}`, data } });
       await queueSlack(tx, entry);
@@ -69,9 +72,38 @@ export async function registerRelationships(app: FastifyInstance, options: { dat
       const existing = await tx.objectiveLink.findMany({ where: { orgId, type: input.type } });
       if (existing.some(l => l.sourceId === input.sourceId && l.targetId === input.targetId)) throw new ApiError(409, 'DUPLICATE_LINK', 'These objectives are already connected in this graph');
       if (createsCycle(existing, input.sourceId, input.targetId)) throw new ApiError(409, 'GRAPH_CYCLE', 'This relationship would create a cycle');
+      if (input.type === 'alignment' && existing.some(l => l.targetId === input.targetId)) throw new ApiError(409, 'PARENT_ALREADY_ATTACHED', 'This objective already has a parent. Change or detach its parent first.');
       const link = await tx.objectiveLink.create({ data: { orgId, sourceId: input.sourceId, targetId: input.targetId, type: input.type, weight: input.type === 'alignment' ? input.weight : 1 } });
       await finishRelationship(tx, actor, source, target, link.type, 'created', { linkId: link.id, sourceId: source.id, targetId: target.id, type: link.type, weight: link.weight }); return link;
     }); return reply.code(201).send(result);
+  });
+  for (const operation of ['reparent', 'reconnect'] as const) app.post(`/api/v1/orgs/:orgId/links/:linkId/${operation}`, route('Atomically replace one alignment endpoint, preserving its weight and other links'), async request => {
+    const input = operation === 'reconnect' ? linkReconnectSchema.parse(request.body) : (() => {
+      const parent = linkReparentSchema.parse(request.body);
+      return { ...parent, end: 'parent' as const, objectiveId: parent.parentId, objectiveVersion: parent.parentVersion };
+    })();
+    return write(request, async (tx, actor, { orgId, linkId }) => {
+      const link = await tx.objectiveLink.findFirst({ where: { orgId, id: linkId } }); if (!link) throw notFound();
+      if (link.type !== 'alignment') throw new ApiError(400, 'ALIGNMENT_REQUIRED', 'Only alignment links can be reattached');
+      const { source, target } = await endpoints(tx, actor, { ...link, ...input });
+      const replacement = await loadObjective(tx, orgId, input.objectiveId);
+      await requireObjectiveEdit(tx, actor, replacement); requireLiveObjective(replacement); checkVersion(replacement.version, input.objectiveVersion);
+      const changingParent = input.end === 'parent';
+      if (replacement.id === (changingParent ? source.id : target.id)) throw new ApiError(400, changingParent ? 'PARENT_UNCHANGED' : 'CHILD_UNCHANGED', `Choose a different ${input.end} objective`);
+      const nextSource = changingParent ? replacement : source; const nextTarget = changingParent ? target : replacement;
+      const existing = await tx.objectiveLink.findMany({ where: { orgId, type: 'alignment', id: { not: link.id } } });
+      if (existing.some(l => l.sourceId === nextSource.id && l.targetId === nextTarget.id)) throw new ApiError(409, 'DUPLICATE_LINK', 'These objectives are already connected in this graph');
+      if (createsCycle(existing, nextSource.id, nextTarget.id)) throw new ApiError(409, 'GRAPH_CYCLE', 'This relationship would create a cycle');
+      if (existing.some(l => l.targetId === nextTarget.id)) throw new ApiError(409, 'PARENT_ALREADY_ATTACHED', 'This objective already has a parent. Change or detach its parent first.');
+      const updated = await tx.objectiveLink.update({ where: { id: link.id }, data: { sourceId: nextSource.id, targetId: nextTarget.id } });
+      const changed = [source.id, target.id, replacement.id];
+      await tx.objective.updateMany({ where: { orgId, id: { in: changed } }, data: { version: { increment: 1 }, updatedAt: new Date() } });
+      await invalidateRelated(tx, orgId, changed);
+      const data = { linkId: link.id, type: link.type, weight: link.weight, ...(changingParent ? { previousParentId: source.id, newParentId: replacement.id } : { previousChildId: target.id, newChildId: replacement.id }) };
+      await auditRelationship(tx, actor, source, target, 'alignment', 'removed', { ...data, sourceId: source.id, targetId: target.id });
+      await auditRelationship(tx, actor, nextSource, nextTarget, 'alignment', 'created', { ...data, sourceId: nextSource.id, targetId: nextTarget.id });
+      return updated;
+    });
   });
   for (const method of ['PATCH', 'DELETE'] as const) app.route({ method, url: '/api/v1/orgs/:orgId/links/:linkId', ...route(method === 'PATCH' ? 'Change a parent-specific alignment weight' : 'Remove a relationship'), handler: async request => {
     const input = linkChangeSchema.parse(request.body);

@@ -79,7 +79,7 @@ export async function presentObjective(database: Database, actor: Actor, objecti
   const member = await database.membership.findUniqueOrThrow({ where: { id: actor.id }, select: { userId: true } });
   const preference = await database.objectivePreference.findUnique({ where: { objectiveId_userId: { objectiveId: objective.id, userId: member.userId } } });
   const unresolvedPrerequisites = prerequisites(graph, objective.id).map(o => ({ id: o.id, title: o.title, state: o.state, archivedAt: o.archivedAt }));
-  return { ...objective, notificationsEnabled: preference?.enabled ?? true, progress: graph.scores.get(objective.id) ?? 0, blocked: unresolvedPrerequisites.length > 0, unresolvedPrerequisites, canEdit, canContribute, keyResults: objective.keyResults.map(kr => ({ ...kr, progress: metricProgress(kr as Parameters<typeof metricProgress>[0]), canUpdate: actor.role !== 'viewer' && (canContribute || kr.ownerId === actor.id) })) };
+  return { ...objective, alignmentParentCount: graph.links.filter(l => l.type === 'alignment' && l.targetId === objective.id).length, notificationsEnabled: preference?.enabled ?? true, progress: graph.scores.get(objective.id) ?? 0, blocked: unresolvedPrerequisites.length > 0, unresolvedPrerequisites, canEdit, canContribute, keyResults: objective.keyResults.map(kr => ({ ...kr, progress: metricProgress(kr as Parameters<typeof metricProgress>[0]), canUpdate: actor.role !== 'viewer' && (canContribute || kr.ownerId === actor.id) })) };
 }
 export function todayInTimezone(timezone: string) {
   const parts = new Intl.DateTimeFormat('en', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());

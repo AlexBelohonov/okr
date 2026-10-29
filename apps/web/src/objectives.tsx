@@ -13,6 +13,7 @@ import { Feedback, LoadState, MemberPicker, Pagination, useAction, useOrganizati
 interface Assignment { membershipId: string; role: 'coowner' | 'contributor' | 'follower'; membership: Member }
 interface Metric extends KeyResult { owner: Member | null; canUpdate: boolean }
 export interface Objective {
+  alignmentParentCount: number;
   id: string; title: string; description: string; scope: 'personal' | 'team' | 'company'; teamId: string | null; periodId: string | null;
   startDate: string; endDate: string; leadId: string; lead: Member; assignments: Assignment[]; health: typeof healths[number];
   state: typeof states[number]; progressMode: 'key_results' | 'children'; version: number; progress: number; finalScore: number | null;

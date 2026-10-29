@@ -233,15 +233,16 @@ async function connect(f: Awaited<ReturnType<typeof fixture>>, sourceId: string,
 async function close(f: Awaited<ReturnType<typeof fixture>>, id: string, state: string, fields = {}) {
   const current = await f.get(id); return f.owner.mutate(`${f.root}/objectives/${id}/lifecycle`, { version: current.version, state, note: 'Lifecycle assessment', ...fields });
 }
-test('multiple parents and unequal weights recalculate ancestors, modes and unique totals', async t => {
-  const f = await fixture(t); const a = await f.create({ title: 'Parent one', progressMode: 'children' }); const b = await f.create({ title: 'Parent two', progressMode: 'children' }); const top = await f.create({ progressMode: 'children' });
+test('single-parent trees and unequal child weights recalculate ancestors, modes and unique totals', async t => {
+  const f = await fixture(t); const a = await f.create({ title: 'Parent one', progressMode: 'children' }); const b = await f.create({ title: 'Sibling objective' }); const top = await f.create({ progressMode: 'children' });
   const low = await f.create(); await f.metric(low.id, { current: 20 }); const high = await f.create(); await f.metric(high.id, { current: 80 });
-  for (const [s, target, weight] of [[a.id, low.id, 1], [a.id, high.id, 3], [b.id, low.id, 3], [b.id, high.id, 1], [top.id, a.id, 1], [top.id, b.id, 1]] as const) assert.equal((await connect(f, s, target, 'alignment', weight)).statusCode, 201);
+  await f.metric(b.id, { current: 35 });
+  for (const [s, target, weight] of [[a.id, low.id, 1], [a.id, high.id, 3], [top.id, a.id, 1], [top.id, b.id, 1]] as const) assert.equal((await connect(f, s, target, 'alignment', weight)).statusCode, 201);
   assert.equal((await f.get(a.id)).progress, 65); assert.equal((await f.get(b.id)).progress, 35); assert.equal((await f.get(top.id)).progress, 50);
   const before = await f.get(top.id); const child = await f.get(low.id); const kr = child.keyResults[0]; assert.equal((await f.owner.mutate(`${f.root}/objectives/${low.id}/key-results/${kr.id}/current`, { current: 40, version: kr.version, objectiveVersion: child.version }, 'PATCH')).statusCode, 200);
-  assert.equal((await f.get(top.id)).progress, 60); assert.ok((await f.get(top.id)).version > before.version);
+  assert.equal((await f.get(top.id)).progress, 52.5); assert.ok((await f.get(top.id)).version > before.version);
   assert.equal((await f.owner.mutate(`${f.root}/objectives/${top.id}/lifecycle`, { state: 'completed', note: 'Stale rollup', version: before.version })).statusCode, 409);
-  const summary = (await f.owner.request('GET', `${f.root}/objective-summary`)).json(); assert.equal(summary.total, 5); assert.equal(summary.averageProgress, 60);
+  const summary = (await f.owner.request('GET', `${f.root}/objective-summary`)).json(); assert.equal(summary.total, 5); assert.equal(summary.averageProgress, 55.5);
   const current = await f.get(a.id); assert.equal((await f.owner.mutate(`${f.root}/objectives/${a.id}`, { ...current, progressMode: 'key_results' }, 'PATCH')).json().progress, 0);
   await f.metric(a.id, { current: 12 }); assert.equal((await f.get(a.id)).progress, 12); const fresh = await f.get(a.id); assert.equal((await f.owner.mutate(`${f.root}/objectives/${a.id}`, { ...fresh, progressMode: 'children' }, 'PATCH')).json().progress, 70);
 });
@@ -263,6 +264,172 @@ test('alignment weights and removal reject stale versions and record both endpoi
   assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}`, versions, 'DELETE')).statusCode, 409);
   const source = await f.get(parent.id); const freshTarget = await f.get(child.id); assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}`, { sourceVersion: source.version, targetVersion: freshTarget.version }, 'DELETE')).statusCode, 200);
   assert.equal((await f.get(parent.id)).progress, 0); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId, type: { startsWith: 'relationship_' } } }), 6);
+});
+async function parentChange(f: Awaited<ReturnType<typeof fixture>>, link: { id: string; sourceId: string; targetId: string }, parentId: string) {
+  return { sourceVersion: (await f.get(link.sourceId)).version, targetVersion: (await f.get(link.targetId)).version, parentId, parentVersion: (await f.get(parentId)).version };
+}
+async function reconnectChange(f: Awaited<ReturnType<typeof fixture>>, link: { sourceId: string; targetId: string }, objectiveId: string, end = 'child') {
+  return { sourceVersion: (await f.get(link.sourceId)).version, targetVersion: (await f.get(link.targetId)).version, end, objectiveId, objectiveVersion: (await f.get(objectiveId)).version };
+}
+test('single-parent rule rejects additional parents and moving a line to an already parented child without side effects', async t => {
+  const f = await fixture(t); const parent = await f.create(); const other = await f.create(); const child = await f.create(); const attached = await f.create();
+  const link = (await connect(f, parent.id, child.id)).json(); await connect(f, other.id, attached.id);
+  const before = await db.objectiveLink.findMany({ where: { orgId: f.orgId }, orderBy: { id: 'asc' } }); const versions = await Promise.all([parent.id, other.id, child.id, attached.id].map(id => f.get(id))); const count = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  assert.equal((await connect(f, other.id, child.id)).json().error.code, 'PARENT_ALREADY_ATTACHED');
+  assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, await reconnectChange(f, link, attached.id))).json().error.code, 'PARENT_ALREADY_ATTACHED');
+  assert.deepEqual(await db.objectiveLink.findMany({ where: { orgId: f.orgId }, orderBy: { id: 'asc' } }), before); assert.deepEqual(await Promise.all([parent.id, other.id, child.id, attached.id].map(id => f.get(id))), versions); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), count);
+  // Prerequisites do not count as parents, including several for the same child.
+  assert.equal((await connect(f, parent.id, child.id, 'dependency')).statusCode, 201); assert.equal((await connect(f, other.id, child.id, 'dependency')).statusCode, 201);
+  assert.equal((await f.get(child.id)).alignmentParentCount, 1);
+  const hidden = (await f.owner.request('GET', `${f.root}/objectives?search=${encodeURIComponent(child.title)}`)).json(); assert.ok(hidden.items.some((o: any) => o.id === child.id && o.alignmentParentCount === 1));
+});
+test('concurrent parent creation and reconnection serialize to leave exactly one incoming alignment', async t => {
+  const f = await fixture(t); const admin = await f.member('admin'); const a = await f.create(); const b = await f.create(); const child = await f.create();
+  const body = (source: any) => ({ sourceId: source.id, targetId: child.id, sourceVersion: source.version, targetVersion: child.version, type: 'alignment' });
+  const results = await Promise.all([f.owner.mutate(`${f.root}/links`, body(a)), admin.actor.mutate(`${f.root}/links`, body(b))]); assert.deepEqual(results.map(r => r.statusCode).sort(), [201, 409]);
+  assert.equal(await db.objectiveLink.count({ where: { targetId: child.id, type: 'alignment' } }), 1);
+  const winner = results.find(r => r.statusCode === 201)!.json(); const loser = winner.sourceId === a.id ? b : a; const secondChild = await f.create(); const second = (await connect(f, loser.id, secondChild.id)).json(); const target = await f.create();
+  const changes = await Promise.all([reconnectChange(f, winner, target.id), reconnectChange(f, second, target.id)]);
+  const moves = await Promise.all([f.owner.mutate(`${f.root}/links/${winner.id}/reconnect`, changes[0]), admin.actor.mutate(`${f.root}/links/${second.id}/reconnect`, changes[1])]); assert.deepEqual(moves.map(r => r.statusCode).sort(), [200, 409]);
+  assert.equal(await db.objectiveLink.count({ where: { targetId: target.id, type: 'alignment' } }), 1); assert.equal(await db.objectiveLink.count({ where: { orgId: f.orgId, type: 'alignment' } }), 2);
+});
+test('reattaching a child preserves weight and unrelated links, updates rollups, versions and all endpoint histories', async t => {
+  const f = await fixture(t); const top = await f.create({ progressMode: 'children' }); const parent = await f.create({ progressMode: 'children' }); const old = await f.create(); const next = await f.create(); const other = await f.create({ progressMode: 'children' });
+  await f.metric(old.id, { current: 20 }); await f.metric(next.id, { current: 80 }); await connect(f, top.id, parent.id); await connect(f, other.id, old.id, 'dependency'); await connect(f, old.id, next.id, 'dependency');
+  const link = (await connect(f, parent.id, old.id, 'alignment', 3)).json(); const ids = [top.id, parent.id, old.id, next.id, other.id]; const before = await Promise.all(ids.map(id => f.get(id)));
+  const untouched = await db.objectiveLink.findMany({ where: { orgId: f.orgId, id: { not: link.id } }, orderBy: { id: 'asc' } });
+  const response = await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, await reconnectChange(f, link, next.id)); assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().id, link.id); assert.equal(response.json().sourceId, parent.id); assert.equal(response.json().targetId, next.id); assert.equal(response.json().weight, 3);
+  assert.deepEqual(await db.objectiveLink.findMany({ where: { orgId: f.orgId, id: { not: link.id } }, orderBy: { id: 'asc' } }), untouched);
+  const after = await Promise.all(ids.map(id => f.get(id))); assert.deepEqual(after.map(o => o.progress), [80, 80, 20, 80, 0]);
+  for (let i = 0; i < ids.length; i++) assert.equal(after[i].version, before[i].version + (i === 4 ? 0 : 1));
+  for (const index of [2, 3]) { assert.equal(after[index].title, before[index].title); assert.deepEqual(after[index].keyResults, before[index].keyResults); }
+  const audits = await db.auditEvent.findMany({ where: { orgId: f.orgId, data: { path: ['newChildId'], equals: next.id } } });
+  assert.equal(audits.length, 4); assert.deepEqual(audits.map(a => a.objectiveId).sort(), [parent.id, parent.id, old.id, next.id].sort()); assert.ok(audits.every(a => a.userId === f.account.user.id));
+  // The same route moves the other end, without altering this child or its weight.
+  const current = response.json(); const moved = await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, await reconnectChange(f, current, other.id, 'parent')); assert.equal(moved.statusCode, 200, moved.body); assert.equal(moved.json().sourceId, other.id); assert.equal(moved.json().targetId, next.id); assert.equal(moved.json().weight, 3);
+});
+test('child reconnection rejects stale versions, self, duplicate, cycles, unchanged and foreign endpoints without mutation', async t => {
+  const f = await fixture(t); const parent = await f.create(); const old = await f.create(); const next = await f.create(); const ancestor = await f.create(); const duplicate = await f.create();
+  const link = (await connect(f, parent.id, old.id)).json(); await connect(f, ancestor.id, parent.id); await connect(f, parent.id, duplicate.id);
+  const body = await reconnectChange(f, link, next.id); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  for (const key of ['sourceVersion', 'targetVersion', 'objectiveVersion'] as const) assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, { ...body, [key]: body[key] + 1 })).json().error.code, 'VERSION_CONFLICT');
+  for (const [id, code] of [[parent.id, 'GRAPH_CYCLE'], [ancestor.id, 'GRAPH_CYCLE'], [duplicate.id, 'DUPLICATE_LINK'], [old.id, 'CHILD_UNCHANGED']]) assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, await reconnectChange(f, link, id))).json().error.code, code);
+  const foreign = await db.organization.create({ data: { name: 'Foreign reconnect' } }); f.orgIds.push(foreign.id); const member = await db.membership.create({ data: { orgId: foreign.id, userId: f.account.user.id, role: 'owner' } }); const objective = await db.objective.create({ data: { orgId: foreign.id, leadId: member.id, title: 'Foreign endpoint', startDate: '2026-01-01', endDate: '2026-03-31' } });
+  assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reconnect`, { ...body, objectiveId: objective.id, objectiveVersion: objective.version })).statusCode, 404);
+  assert.deepEqual(await db.objectiveLink.findUnique({ where: { id: link.id } }), link); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount); assert.deepEqual(await reconnectChange(f, link, next.id), body);
+  const dependency = (await connect(f, parent.id, old.id, 'dependency')).json(); assert.equal((await f.owner.mutate(`${f.root}/links/${dependency.id}/reconnect`, await reconnectChange(f, dependency, next.id))).json().error.code, 'ALIGNMENT_REQUIRED');
+});
+test('child reconnection requires all three editors and live objectives, plus Origin, CSRF and active tenant/session', async t => {
+  const f = await fixture(t); const member = await f.member(); const viewer = await f.member('viewer'); const parent = await f.create(); const old = await f.create(); const next = await f.create(); const link = (await connect(f, parent.id, old.id)).json(); const path = `${f.root}/links/${link.id}/reconnect`;
+  assert.equal((await viewer.actor.mutate(path, await reconnectChange(f, link, next.id))).statusCode, 403);
+  for (const id of [parent.id, old.id, next.id]) {
+    assert.equal((await member.actor.mutate(path, await reconnectChange(f, link, next.id))).statusCode, 403);
+    await db.assignment.create({ data: { orgId: f.orgId, objectiveId: id, membershipId: member.membership.id, role: 'coowner' } });
+  }
+  for (const id of [parent.id, old.id, next.id]) {
+    await close(f, id, 'completed'); assert.equal((await member.actor.mutate(path, await reconnectChange(f, link, next.id))).json().error.code, 'OBJECTIVE_LOCKED'); await close(f, id, 'active');
+    await f.owner.mutate(`${f.root}/objectives/${id}/archive`, { archived: true, version: (await f.get(id)).version }); assert.equal((await member.actor.mutate(path, await reconnectChange(f, link, next.id))).json().error.code, 'OBJECTIVE_LOCKED'); await f.owner.mutate(`${f.root}/objectives/${id}/archive`, { archived: false, version: (await f.get(id)).version });
+  }
+  const body = await reconnectChange(f, link, next.id);
+  for (const headers of ([{ origin: 'https://attacker.example' }, { 'x-csrf-token': 'wrong' }] as Record<string, string>[])) assert.equal((await f.owner.mutate(path, body, 'POST', headers)).statusCode, 403);
+  assert.equal((await f.owner.mutate(path, { ...body, end: 'dependency' })).statusCode, 400); assert.equal((await f.owner.mutate(path, { ...body, objectiveVersion: 0 })).statusCode, 400);
+  await db.organization.update({ where: { id: f.orgId }, data: { active: false } }); assert.equal((await f.owner.mutate(path, body)).statusCode, 404); await db.organization.update({ where: { id: f.orgId }, data: { active: true } });
+  await db.session.deleteMany({ where: { userId: f.account.user.id } }); assert.equal((await f.owner.mutate(path, body)).statusCode, 401);
+  assert.equal((await member.actor.mutate(path, body)).statusCode, 200);
+});
+test('child reconnection rolls back after a later audit failure and concurrent opposing reconnections cannot create a cycle', async t => {
+  const f = await fixture(t); const admin = await f.member('admin'); const a = await f.create(); const b = await f.create(); const x = await f.create(); const y = await f.create();
+  const ax = (await connect(f, a.id, x.id)).json(); const by = (await connect(f, b.id, y.id)).json(); const before = await db.objective.findMany({ where: { orgId: f.orgId }, orderBy: { id: 'asc' } }); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  const failing = db.$extends({ query: { auditEvent: { async create({ args, query }) { if (args.data.orgId === f.orgId && args.data.type === 'relationship_created') throw new Error('Injected reconnect audit failure'); return query(args); } } } }) as unknown as PrismaClient;
+  const app = await buildApp({ logger: false, database: failing, accountConfig: f.config }); t.after(() => app.close()); const actor = f.client(app); await actor.mutate('auth/login', { email: f.account.user.email, password });
+  assert.equal((await actor.mutate(`${f.root}/links/${ax.id}/reconnect`, await reconnectChange(f, ax, b.id))).statusCode, 500);
+  assert.deepEqual(await db.objectiveLink.findUnique({ where: { id: ax.id } }), ax); assert.deepEqual(await db.objective.findMany({ where: { orgId: f.orgId }, orderBy: { id: 'asc' } }), before); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount);
+  const results = await Promise.all([f.owner.mutate(`${f.root}/links/${ax.id}/reconnect`, await reconnectChange(f, ax, b.id)), admin.actor.mutate(`${f.root}/links/${by.id}/reconnect`, await reconnectChange(f, by, a.id))]); assert.deepEqual(results.map(r => r.statusCode).sort(), [200, 409]);
+  const losing = results[0].statusCode === 200 ? by : ax; const replacement = results[0].statusCode === 200 ? a.id : b.id; assert.equal((await f.owner.mutate(`${f.root}/links/${losing.id}/reconnect`, await reconnectChange(f, losing, replacement))).json().error.code, 'GRAPH_CYCLE');
+});
+test('changing one parent preserves other relationships and weight, recalculates both ancestries and audits atomically', async t => {
+  const f = await fixture(t); const topOld = await f.create({ progressMode: 'children' }); const topNew = await f.create({ progressMode: 'children' });
+  const old = await f.create({ title: 'Original parent', progressMode: 'children' }); const next = await f.create({ title: 'New parent', progressMode: 'children' }); const other = await f.create({ progressMode: 'children' });
+  const child = await f.create({ title: 'Moving objective' }); await f.metric(child.id, { current: 75 }); const nested = await f.create();
+  await connect(f, topOld.id, old.id); await connect(f, topNew.id, next.id); await connect(f, other.id, child.id, 'dependency'); await connect(f, child.id, nested.id); await connect(f, old.id, child.id, 'dependency');
+  const link = (await connect(f, old.id, child.id, 'alignment', 3)).json();
+  const ids = [topOld.id, topNew.id, old.id, next.id, other.id, child.id]; const before = await Promise.all(ids.map(id => f.get(id)));
+  const untouched = await db.objectiveLink.findMany({ where: { orgId: f.orgId, id: { not: link.id } }, orderBy: { id: 'asc' } }); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  const response = await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id)); assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().id, link.id); assert.equal(response.json().weight, 3); assert.equal(response.json().sourceId, next.id);
+  assert.deepEqual(await db.objectiveLink.findMany({ where: { orgId: f.orgId, id: { not: link.id } }, orderBy: { id: 'asc' } }), untouched);
+  const after = await Promise.all(ids.map(id => f.get(id))); assert.deepEqual(after.map(o => o.progress), [0, 75, 0, 75, 0, 75]);
+  for (let i = 0; i < ids.length; i++) assert.equal(after[i].version, before[i].version + (i === 4 ? 0 : 1));
+  assert.equal(after[5].title, before[5].title); assert.deepEqual(after[5].keyResults, before[5].keyResults); assert.equal(after[5].state, before[5].state);
+  assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount + 4);
+  const audits = await db.auditEvent.findMany({ where: { orgId: f.orgId, data: { path: ['newParentId'], equals: next.id } } });
+  assert.equal(audits.length, 4); assert.ok(audits.every(a => a.userId === f.account.user.id)); assert.deepEqual(audits.map(a => a.objectiveId).sort(), [old.id, next.id, child.id, child.id].sort());
+});
+test('changing parents rejects each stale objective version without detaching or auditing', async t => {
+  const f = await fixture(t); const old = await f.create(); const next = await f.create(); const child = await f.create(); const link = (await connect(f, old.id, child.id)).json();
+  const body = await parentChange(f, link, next.id); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  for (const key of ['sourceVersion', 'targetVersion', 'parentVersion'] as const) {
+    const r = await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, { ...body, [key]: body[key] + 1 }); assert.equal(r.json().error.code, 'VERSION_CONFLICT');
+  }
+  assert.deepEqual(await db.objectiveLink.findUnique({ where: { id: link.id } }), link);
+  assert.deepEqual(await parentChange(f, link, next.id), body); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount);
+});
+test('changing parents rejects cycles, self, unchanged, foreign and prerequisite links', async t => {
+  const f = await fixture(t); const old = await f.create(); const child = await f.create(); const descendant = await f.create(); const other = await f.create();
+  const link = (await connect(f, old.id, child.id)).json(); await connect(f, child.id, descendant.id);
+  for (const [id, code] of [[child.id, 'GRAPH_CYCLE'], [descendant.id, 'GRAPH_CYCLE'], [old.id, 'PARENT_UNCHANGED']]) {
+    const r = await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, id)); assert.equal(r.json().error.code, code, r.body);
+  }
+  const foreign = await db.organization.create({ data: { name: 'Foreign parents' } }); f.orgIds.push(foreign.id); const member = await db.membership.create({ data: { orgId: foreign.id, userId: f.account.user.id, role: 'owner' } });
+  const foreignParent = await db.objective.create({ data: { orgId: foreign.id, leadId: member.id, title: 'Foreign parent', startDate: '2026-01-01', endDate: '2026-03-31' } });
+  const body = { ...await parentChange(f, link, other.id), parentId: foreignParent.id, parentVersion: foreignParent.version };
+  assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, body)).statusCode, 404);
+  const foreignLink = await db.objectiveLink.create({ data: { orgId: foreign.id, sourceId: foreignParent.id, targetId: (await db.objective.create({ data: { orgId: foreign.id, leadId: member.id, title: 'Foreign child', startDate: '2026-01-01', endDate: '2026-03-31' } })).id, type: 'alignment' } });
+  assert.equal((await f.owner.mutate(`${f.root}/links/${foreignLink.id}/reparent`, body)).statusCode, 404);
+  const dependency = (await connect(f, old.id, child.id, 'dependency')).json(); assert.equal((await f.owner.mutate(`${f.root}/links/${dependency.id}/reparent`, await parentChange(f, dependency, other.id))).json().error.code, 'ALIGNMENT_REQUIRED');
+  assert.equal((await db.objectiveLink.findUniqueOrThrow({ where: { id: link.id } })).sourceId, old.id);
+});
+test('changing parents requires all three editors and live unarchived objectives', async t => {
+  const f = await fixture(t); const member = await f.member(); const viewer = await f.member('viewer'); const contributor = await f.member();
+  const old = await f.create(); const next = await f.create(); const child = await f.create({ assignments: [{ membershipId: contributor.membership.id, role: 'contributor' }] }); const link = (await connect(f, old.id, child.id)).json();
+  for (const actor of [member.actor, viewer.actor, contributor.actor]) assert.equal((await actor.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).statusCode, 403);
+  // Grant edits one endpoint at a time: neither the child nor either parent can be skipped.
+  for (const id of [child.id, old.id, next.id]) {
+    assert.equal((await member.actor.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).statusCode, 403);
+    await db.assignment.create({ data: { orgId: f.orgId, objectiveId: id, membershipId: member.membership.id, role: 'coowner' } });
+  }
+  for (const id of [old.id, next.id, child.id]) {
+    await close(f, id, 'completed'); assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).json().error.code, 'OBJECTIVE_LOCKED'); await close(f, id, 'active');
+    await f.owner.mutate(`${f.root}/objectives/${id}/archive`, { archived: true, version: (await f.get(id)).version }); assert.equal((await f.owner.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).json().error.code, 'OBJECTIVE_LOCKED');
+    await f.owner.mutate(`${f.root}/objectives/${id}/archive`, { archived: false, version: (await f.get(id)).version });
+  }
+  assert.equal((await member.actor.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).statusCode, 200);
+});
+test('parent replacement rolls back even when a later new-parent audit fails', async t => {
+  const f = await fixture(t); const top = await f.create({ progressMode: 'children' }); const old = await f.create({ progressMode: 'children' }); const next = await f.create({ progressMode: 'children' }); const child = await f.create(); await f.metric(child.id); await connect(f, top.id, old.id);
+  const link = (await connect(f, old.id, child.id)).json(); const ids = [top.id, old.id, next.id, child.id]; const before = await Promise.all(ids.map(id => f.get(id))); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  const failing = db.$extends({ query: { auditEvent: { async create({ args, query }) { if (args.data.orgId === f.orgId && args.data.type === 'relationship_created') throw new Error('Injected reparent audit failure'); return query(args); } } } }) as unknown as PrismaClient;
+  const app = await buildApp({ logger: false, database: failing, accountConfig: f.config }); t.after(() => app.close()); const actor = f.client(app); await actor.mutate('auth/login', { email: f.account.user.email, password });
+  assert.equal((await actor.mutate(`${f.root}/links/${link.id}/reparent`, await parentChange(f, link, next.id))).statusCode, 500);
+  assert.equal((await db.objectiveLink.findUniqueOrThrow({ where: { id: link.id } })).sourceId, old.id); assert.deepEqual(await Promise.all(ids.map(id => f.get(id))), before); assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount);
+});
+test('concurrent parent replacements serialize and cannot create opposing cycles', async t => {
+  const f = await fixture(t); const admin = await f.member('admin'); const a = await f.create(); const b = await f.create(); const x = await f.create(); const y = await f.create();
+  const ax = (await connect(f, a.id, x.id)).json(); const by = (await connect(f, b.id, y.id)).json();
+  const bodies = await Promise.all([parentChange(f, ax, y.id), parentChange(f, by, x.id)]);
+  const results = await Promise.all([f.owner.mutate(`${f.root}/links/${ax.id}/reparent`, bodies[0]), admin.actor.mutate(`${f.root}/links/${by.id}/reparent`, bodies[1])]); assert.deepEqual(results.map(r => r.statusCode).sort(), [200, 409]);
+  const losing = results[0].statusCode === 200 ? by : ax; const parentId = results[0].statusCode === 200 ? x.id : y.id;
+  assert.equal((await f.owner.mutate(`${f.root}/links/${losing.id}/reparent`, await parentChange(f, losing, parentId))).json().error.code, 'GRAPH_CYCLE');
+  assert.equal(await db.objectiveLink.count({ where: { orgId: f.orgId } }), 2);
+});
+test('parent replacement enforces Origin, CSRF, active tenant and session', async t => {
+  const f = await fixture(t); const old = await f.create(); const child = await f.create(); const next = await f.create(); const link = (await connect(f, old.id, child.id)).json(); const path = `${f.root}/links/${link.id}/reparent`; const body = await parentChange(f, link, next.id);
+  for (const headers of ([{ origin: 'https://attacker.example' }, { 'x-csrf-token': 'wrong' }] as Record<string, string>[])) assert.equal((await f.owner.mutate(path, body, 'POST', headers)).statusCode, 403);
+  assert.equal((await f.owner.mutate(path, { ...body, parentVersion: 0 })).statusCode, 400);
+  await db.organization.update({ where: { id: f.orgId }, data: { active: false } }); assert.equal((await f.owner.mutate(path, body)).statusCode, 404);
+  await db.organization.update({ where: { id: f.orgId }, data: { active: true } }); await db.session.deleteMany({ where: { userId: f.account.user.id } }); assert.equal((await f.owner.mutate(path, body)).statusCode, 401);
+  assert.equal((await db.objectiveLink.findUniqueOrThrow({ where: { id: link.id } })).sourceId, old.id);
 });
 test('self duplicate indirect cycles and cross-tenant graph resources are rejected independently', async t => {
   const f = await fixture(t); const a = await f.create(); const b = await f.create(); const c = await f.create();

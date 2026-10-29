@@ -88,3 +88,20 @@ test('database rejects objective self-links', async () => {
     await assert.rejects(tx.objectiveLink.create({ data: { orgId: ids.orgId, sourceId: ids.objectiveId, targetId: ids.objectiveId, type: 'dependency' } }), /constraint/i);
   });
 });
+
+test('database rejects a second alignment parent even outside the API', async () => {
+  await fixture(async (tx, ids) => {
+    const parent = await tx.objective.create({ data: { orgId: ids.orgId, leadId: ids.memberId, title: 'First parent', startDate: '2026-10-01', endDate: '2026-12-31' } });
+    const other = await tx.objective.create({ data: { orgId: ids.orgId, leadId: ids.memberId, title: 'Other parent', startDate: '2026-10-01', endDate: '2026-12-31' } });
+    await tx.objectiveLink.create({ data: { orgId: ids.orgId, sourceId: parent.id, targetId: ids.objectiveId, type: 'alignment' } });
+    await assert.rejects(tx.objectiveLink.create({ data: { orgId: ids.orgId, sourceId: other.id, targetId: ids.objectiveId, type: 'alignment' } }), { code: 'P2002' });
+  });
+});
+test('database permits multiple prerequisites beside the single parent', async () => {
+  await fixture(async (tx, ids) => {
+    const a = await tx.objective.create({ data: { orgId: ids.orgId, leadId: ids.memberId, title: 'Prerequisite A', startDate: '2026-10-01', endDate: '2026-12-31' } });
+    const b = await tx.objective.create({ data: { orgId: ids.orgId, leadId: ids.memberId, title: 'Prerequisite B', startDate: '2026-10-01', endDate: '2026-12-31' } });
+    for (const [sourceId, type] of [[a.id, 'alignment'], [a.id, 'dependency'], [b.id, 'dependency']]) await tx.objectiveLink.create({ data: { orgId: ids.orgId, sourceId, targetId: ids.objectiveId, type } });
+    assert.equal(await tx.objectiveLink.count({ where: { targetId: ids.objectiveId } }), 3);
+  });
+});

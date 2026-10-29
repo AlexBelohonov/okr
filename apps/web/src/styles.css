@@ -309,7 +309,10 @@ td { padding: 0; border-bottom: 1px solid #eceff0; }
 .relation-picker button { display: flex; justify-content: space-between; text-align: left; white-space: normal; flex-wrap: wrap; }
 .relation-picker button span { font-size: 12px; color: #6c7674; }
 .relation-picker .chosen { border-color: #168675; background: #edf8f5; }
-.graph-canvas { width: 100%; height: clamp(480px, calc(100dvh - 270px), 1000px); border: 1px solid #dce5e2; border-radius: 10px; overflow: hidden; background: #fafcfb; }
+.graph-canvas { position: relative; width: 100%; height: clamp(480px, calc(100dvh - 270px), 1000px); border: 1px solid #dce5e2; border-radius: 10px; overflow: hidden; background: #fafcfb; }
+.graph-lock-notice { position: absolute; z-index: 6; top: 12px; left: 12px; right: 12px; max-width: 480px; max-height: calc(100% - 24px); overflow: auto; padding: 12px; border: 1px solid #b8d0c7; border-radius: 8px; background: white; box-shadow: 0 3px 12px #233b3020; font-size: 13px; overflow-wrap: anywhere; }
+.graph-lock-notice p { margin: 0 0 8px; }
+.graph-lock-notice > div { margin-bottom: 8px; }
 .graph-node { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; text-align: left; font-size: 12px; overflow-wrap: anywhere; }
 .graph-node-title { display: flex; align-items: center; gap: 6px; padding: 6px 10px 3px; border-bottom: 1px solid #cce4dc; border-radius: 7px 7px 0 0; background: #eaf5ef; color: #24594d; }
 .graph-node-status { display: flex; justify-content: flex-end; align-items: center; gap: 6px; padding: 0 10px 4px; line-height: 18px; white-space: nowrap; }
@@ -320,7 +323,7 @@ td { padding: 0; border-bottom: 1px solid #eceff0; }
 .graph-node .graph-blocked, .outside-connections { color: #956321; font-size: 12px; }
 .graph-collapse { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; flex-shrink: 0; border-radius: 3px; color: inherit; }
 .graph-collapse:hover { background: #0000000d; }
-.graph-view-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; margin-bottom: 8px; }
+.graph-view-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 22px; margin-bottom: 8px; }
 .graph-list-status, .health-pill { display: inline-flex; align-items: center; gap: 5px; }
 .objective-health-icon { display: inline-flex; align-items: center; flex-shrink: 0; }
 .objective-health-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
@@ -414,4 +417,11 @@ td { padding: 0; border-bottom: 1px solid #eceff0; }
 .activity-section > .account-note { padding: 20px; }
 .graph-list ul { padding-left: 20px; margin: 0; }
 .graph-list li { margin: 8px 0; }
+.graph-reattach { padding: 16px; margin-bottom: 16px; border: 1px solid #b8d0c7; border-radius: 8px; background: #f4faf7; overflow-wrap: anywhere; }
+.graph-reconnectable .react-flow__handle { width: 14px; height: 14px; background: #899995; border: 2px solid white; box-shadow: 0 0 0 1px #637e75; }
+.graph-reconnectable .react-flow__handle.connectable.connectablestart { background: #168675; cursor: crosshair; }
+.graph-reconnectable .react-flow__handle.valid { background: #168675; box-shadow: 0 0 0 5px #16867544; }
+.graph-reconnectable .react-flow__edge:focus { outline: none; }
+.graph-reconnectable .react-flow__edge:focus .react-flow__edge-path { stroke-width: 4; }
+.graph-reconnectable .react-flow__edgeupdater { cursor: grab; stroke: #168675; stroke-width: 2; fill: white; }
 @media (max-width: 700px) { .graph-canvas { height: max(480px, calc(100dvh - 270px)); } .objective-row { gap: 10px; } }

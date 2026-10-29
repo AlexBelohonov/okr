@@ -129,13 +129,13 @@ test('review graph cards are compact with icon scopes and dates available in det
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });
 
-test('alignment collapse preserves card positions and shared children without main-objective stars', async ({ page, objectives }, info) => {
+test('alignment collapse preserves card positions in independent single-parent branches', async ({ page, objectives }, info) => {
   const first = await objectives.create({ title: 'Main strategy one' });
   const second = await objectives.create({ title: 'Main strategy two' });
   const shared = await objectives.create({ title: 'Shared delivery branch' });
   const leaf = await objectives.create({ title: 'Nested delivery leaf' });
   await apiLink(page, objectives.orgId, first.id, shared.id);
-  await apiLink(page, objectives.orgId, second.id, shared.id);
+  await apiLink(page, objectives.orgId, first.id, second.id);
   await apiLink(page, objectives.orgId, shared.id, leaf.id);
   await apiLink(page, objectives.orgId, first.id, shared.id, 'dependency');
   await page.goto('/alignment');
@@ -160,28 +160,28 @@ test('alignment collapse preserves card positions and shared children without ma
   await firstToggle.focus(); await firstToggle.press('Enter');
   await expect(node(first.title).getByRole('button', { name: `Expand children of ${first.title}`, exact: true })).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('dialog', { name: 'Objective details', exact: true })).toHaveCount(0);
-  await expect(node(shared.title)).toBeVisible(); await expect(node(leaf.title)).toBeVisible(); await expect(edges).toHaveCount(2);
-  await expectFixed(titles);
+  await expect(node(shared.title)).toHaveCount(0); await expect(node(leaf.title)).toHaveCount(0); await expect(edges).toHaveCount(0);
+  await expectFixed([first.title]);
+  await node(first.title).getByRole('button', { name: `Expand children of ${first.title}`, exact: true }).click();
   await node(shared.title).getByRole('button', { name: `Collapse children of ${shared.title}`, exact: true }).press('Space');
   await expect(node(leaf.title)).toHaveCount(0); await expect(node(shared.title)).toBeVisible();
   await expectFixed([first.title, second.title, shared.title]);
-  await node(second.title).getByRole('button', { name: `Collapse children of ${second.title}`, exact: true }).click();
+  await node(first.title).getByRole('button', { name: `Collapse children of ${first.title}`, exact: true }).click();
   await expect(node(shared.title)).toHaveCount(0); await expect(node(leaf.title)).toHaveCount(0); await expect(edges).toHaveCount(0);
-  await expect(page.getByText('2 of 4 objectives visible', { exact: true })).toBeVisible();
-  await expectFixed([first.title, second.title]);
+  await expect(page.getByText('1 of 4 objectives visible', { exact: true })).toBeVisible();
+  await expectFixed([first.title]);
   await node(first.title).getByRole('button', { name: `Expand children of ${first.title}`, exact: true }).click();
   await expect(node(shared.title)).toBeVisible(); await expect(node(leaf.title)).toHaveCount(0);
   await expectFixed([first.title, second.title, shared.title]);
   await page.getByRole('button', { name: 'Expand all children', exact: true }).click(); await expect(node(leaf.title)).toBeVisible();
   await expectFixed(titles);
   await page.locator('.graph-canvas').screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/r008-stable-expanded-${info.project.name}.png` });
-  for (const title of [first.title, second.title]) await node(title).getByRole('button', { name: `Collapse children of ${title}`, exact: true }).click();
-  await expect(node(shared.title)).toHaveCount(0); await expectFixed([first.title, second.title]);
+  await node(first.title).getByRole('button', { name: `Collapse children of ${first.title}`, exact: true }).click();
+  await expect(node(shared.title)).toHaveCount(0); await expectFixed([first.title]);
   await page.locator('.graph-canvas').screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/r008-stable-collapsed-${info.project.name}.png` });
   await page.reload(); await expect(node(shared.title)).toHaveCount(0);
   await node(first.title).getByRole('button', { name: `Expand children of ${first.title}`, exact: true }).click();
   await expect(node(shared.title)).toBeVisible(); await expect(node(leaf.title)).toBeVisible();
-  await page.getByRole('button', { name: 'Expand all children', exact: true }).click();
   await expect(node(leaf.title)).toBeVisible(); await expect(edges).toHaveCount(3);
   await page.getByRole('button', { name: 'Show filters', exact: true }).click();
   await page.getByLabel('Search graph objectives').fill(shared.title);
@@ -381,20 +381,347 @@ async function uiLink(page: Page, direction: string, title: string, weight = 1) 
   await panel.getByRole('button', { name: new RegExp(title) }).click(); if (['parent', 'child'].includes(direction)) await panel.getByLabel('New contribution weight').fill(String(weight));
   await panel.getByRole('button', { name: 'Add relationship', exact: true }).click(); await expect(panel.getByRole('article').filter({ hasText: title })).toBeVisible();
 }
-test('multiple alignment parents, weights, rollups, score modes and removal work through forms', async ({ page, objectives }, info) => {
+async function dragLineEnd(page: Page, linkId: string, end: 'source' | 'target', objectiveId: string) {
+  const edge = page.locator(`.react-flow__edge[data-id="${linkId}"]`); await expect(edge).toBeAttached(); await edge.focus(); await edge.press('Enter'); await expect(edge).toHaveClass(/selected/);
+  const updater = page.locator(`.react-flow__edge[data-id="${linkId}"] .react-flow__edgeupdater-${end}`);
+  const handle = page.locator(`.react-flow__node[data-id="${objectiveId}"] .react-flow__handle-${end === 'source' ? 'right' : 'left'}`);
+  await expect(updater).toBeAttached(); await expect(handle).toBeVisible(); await handle.scrollIntoViewIfNeeded();
+  const start = await updater.boundingBox(); const finish = await handle.boundingBox(); expect(start).not.toBeNull(); expect(finish).not.toBeNull();
+  await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2); await page.mouse.down();
+  await page.mouse.move(finish!.x + finish!.width / 2, finish!.y + finish!.height / 2, { steps: 15 }); await page.mouse.up();
+}
+async function dragNewLine(page: Page, fromId: string, fromSide: 'left' | 'right', toId: string) {
+  const from = page.locator(`.react-flow__node[data-id="${fromId}"] .react-flow__handle-${fromSide}`);
+  const to = page.locator(`.react-flow__node[data-id="${toId}"] .react-flow__handle-${fromSide === 'left' ? 'right' : 'left'}`);
+  await expect(from).toBeVisible(); await expect(to).toBeVisible(); await page.locator('.graph-canvas').scrollIntoViewIfNeeded();
+  const start = await from.boundingBox(); const finish = await to.boundingBox(); expect(start).not.toBeNull(); expect(finish).not.toBeNull();
+  await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2); await page.mouse.down(); await page.mouse.move(finish!.x + finish!.width / 2, finish!.y + finish!.height / 2, { steps: 15 }); await page.mouse.up();
+}
+async function clickGraphLine(page: Page, linkId: string) {
+  const path = page.locator(`.react-flow__edge[data-id="${linkId}"] .react-flow__edge-interaction`); await expect(path).toBeAttached(); await page.locator('.graph-canvas').scrollIntoViewIfNeeded();
+  const point = await path.evaluate(el => { const path = el as SVGPathElement; const middle = path.getPointAtLength(path.getTotalLength() / 2); const screen = new DOMPoint(middle.x, middle.y).matrixTransform(path.getScreenCTM()!); return { x: screen.x, y: screen.y }; });
+  await page.mouse.click(point.x, point.y);
+}
+test('graph connection points create new alignment lines in either drag direction and prevent a second parent', async ({ page, objectives }, info) => {
+  const parent = await objectives.create({ title: 'Drag new parent', progressMode: 'children' }); const other = await objectives.create({ title: 'Drag other parent' });
+  const child = await objectives.metric(await objectives.create({ title: 'Drag new child' }), { current: 60 }); const second = await objectives.create({ title: 'Drag reverse child' });
+  await page.goto('/alignment'); await expect(page.getByLabel(`Objective ${parent.title}`, { exact: true })).toBeVisible(); await expect(page.locator('.react-flow__edge-path')).toHaveCount(0);
+  for (const objective of [parent, child]) for (const side of ['left', 'right']) {
+    const point = page.locator(`.react-flow__node[data-id="${objective.id}"] .react-flow__handle-${side}`); await expect(point).toBeVisible(); await expect(point).toHaveCSS('width', '14px'); await expect(point).toHaveCSS('height', '14px');
+  }
+  const created = page.waitForResponse(r => r.url().endsWith(`/orgs/${objectives.orgId}/links`) && r.request().method() === 'POST'); await dragNewLine(page, parent.id, 'right', child.id); expect((await created).status()).toBe(201);
+  await expect(page.getByRole('status').filter({ hasText: 'Alignment line created' })).toBeVisible(); await expect(page.getByLabel(`Objective ${parent.title}`, { exact: true })).toContainText('60%');
+  const reverse = page.waitForResponse(r => r.url().endsWith(`/orgs/${objectives.orgId}/links`) && r.request().method() === 'POST'); await dragNewLine(page, second.id, 'left', other.id); expect((await reverse).status()).toBe(201);
+  await expect(page.getByText('4 unique objectives · 2 visible relationships', { exact: true })).toBeVisible();
+  await dragNewLine(page, other.id, 'right', child.id); await expect(page.locator('.react-flow__connection')).toHaveCount(0);
+  const graph = await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json(); expect(graph.links.filter((l: any) => l.targetId === child.id)).toHaveLength(1); expect(graph.links.find((l: any) => l.targetId === child.id)).toMatchObject({ sourceId: parent.id, weight: 1 }); expect(graph.links.find((l: any) => l.targetId === second.id)).toMatchObject({ sourceId: other.id });
+  await page.goto(`/alignment?search=${encodeURIComponent(child.title)}`); await page.getByRole('button', { name: 'Connect objectives', exact: true }).click(); const form = page.getByRole('region', { name: 'New graph connection', exact: true });
+  await expect(form.getByLabel('Child objective').getByRole('option', { name: child.title, exact: true })).toHaveCount(0); await form.getByRole('button', { name: 'Cancel connection', exact: true }).click();
+  await page.goto(`/objectives/${child.id}`); await expect(page.getByRole('button', { name: 'Attach parent', exact: true })).toHaveCount(0);
+  await page.goto('/alignment'); await expect(page.getByText('4 unique objectives · 2 visible relationships', { exact: true })).toBeVisible(); await expect(page.getByLabel(`Objective ${parent.title}`, { exact: true })).toBeVisible(); await expect(page.locator('.react-flow__edge-path')).toHaveCount(2); await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/graph-new-lines-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+test('graph keyboard and touch connection controls reject cycles and stale creation then reload with current versions', async ({ page, objectives }) => {
+  const parent = await objectives.create({ title: 'Connection ancestor' }); const child = await objectives.create({ title: 'Connection descendant' }); const free = await objectives.create({ title: 'Connection fresh child' }); await apiLink(page, objectives.orgId, parent.id, child.id);
+  await page.goto('/alignment'); await page.getByRole('button', { name: 'Connect objectives', exact: true }).click(); const form = page.getByRole('region', { name: 'New graph connection', exact: true });
+  await form.getByLabel('Parent objective').selectOption(child.id); await form.getByLabel('Child objective').selectOption(parent.id); await form.getByRole('button', { name: 'Create line', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('cycle');
+  await form.getByLabel('Child objective').selectOption(free.id); const latest = await getObjective(page, objectives.orgId, free.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${free.id}`, { ...latest, health: 'at_risk' }, 'PATCH')).ok()).toBeTruthy();
+  await form.getByRole('button', { name: 'Create line', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('Reload'); expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json()).links).toHaveLength(1);
+  await page.getByRole('button', { name: 'Reload alignment', exact: true }).click(); await expect(page.getByLabel(`Objective ${free.title}`, { exact: true }).getByRole('img', { name: 'At risk', exact: true })).toBeVisible();
+  await form.getByLabel('Parent objective').selectOption(child.id); await form.getByLabel('Child objective').selectOption(free.id); await form.getByRole('button', { name: 'Create line', exact: true }).press('Enter'); await expect(page.getByRole('status').filter({ hasText: 'Alignment line created' })).toBeVisible(); await expect(form).toHaveCount(0); await expect(page.getByRole('region', { name: 'Alignment graph', exact: true })).toBeFocused();
+});
+test('dependency graph creates lines from a closed visible prerequisite and removes them with confirmation and conflict recovery', async ({ page, objectives }, info) => {
+  const member = await objectives.member('member', 'Dependent editor'); const prerequisite = await objectives.create({ title: 'Visible completed prerequisite' }); const second = await objectives.create({ title: 'Other prerequisite' }); const dependent = await objectives.metric(await objectives.create({ title: 'Editable dependent', leadId: member.id }), { current: 50 });
+  const latest = await getObjective(page, objectives.orgId, prerequisite.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${prerequisite.id}/lifecycle`, { state: 'completed', version: latest.version, note: 'Complete prerequisite fixture' })).ok()).toBeTruthy();
+  await login(page, member.email); await page.goto('/alignment?type=dependency'); await page.getByRole('button', { name: 'Hide filters', exact: true }).click();
+  const created = page.waitForResponse(r => r.url().endsWith(`/orgs/${objectives.orgId}/links`) && r.request().method() === 'POST'); await dragNewLine(page, prerequisite.id, 'right', dependent.id); const response = await created; expect(response.status()).toBe(201); const link = await response.json();
+  await page.getByRole('button', { name: 'Connect objectives', exact: true }).click(); const form = page.getByRole('region', { name: 'New graph connection', exact: true }); await form.getByLabel('Prerequisite objective').selectOption(second.id); await form.getByLabel('Dependent objective').selectOption(dependent.id); await form.getByRole('button', { name: 'Create line', exact: true }).click(); await expect(page.getByText('3 unique objectives · 2 visible relationships', { exact: true })).toBeVisible();
+  const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await edge.focus(); await edge.press('Enter'); const editor = page.getByRole('region', { name: 'Dependency line', exact: true });
+  await editor.getByRole('button', { name: 'Remove dependency line', exact: true }).click(); await editor.getByRole('button', { name: 'Cancel line removal', exact: true }).click(); await expect(edge).toBeAttached(); await editor.getByRole('button', { name: 'Remove dependency line', exact: true }).click();
+  const current = await getObjective(page, objectives.orgId, dependent.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${dependent.id}`, { ...current, health: 'at_risk' }, 'PATCH')).ok()).toBeTruthy();
+  await editor.getByRole('button', { name: 'Confirm remove dependency', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('Reload'); await expect(edge).toBeAttached();
+  await page.getByRole('button', { name: 'Reload alignment', exact: true }).click(); await expect(page.getByLabel(`Objective ${dependent.title}`, { exact: true }).getByRole('img', { name: 'At risk', exact: true })).toBeVisible(); await editor.getByRole('button', { name: 'Remove dependency line', exact: true }).click();
+  await editor.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/dependency-line-remove-${info.project.name}.png` }); await editor.getByRole('button', { name: 'Confirm remove dependency', exact: true }).click(); await expect(page.getByRole('status').filter({ hasText: 'Dependency line removed' })).toBeVisible(); await expect(edge).toHaveCount(0); expect((await getObjective(page, objectives.orgId, dependent.id)).progress).toBe(50);
+  await page.reload(); await expect(page.getByText('3 unique objectives · 1 visible relationships', { exact: true })).toBeVisible(); await expect(edge).toHaveCount(0); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+test('graph creation handles and line removal respect viewer and locked dependent permissions', async ({ page, objectives }) => {
+  const viewer = await objectives.member('viewer', 'Line reader'); const prerequisite = await objectives.create({ title: 'Line prerequisite' }); const dependent = await objectives.create({ title: 'Line closed dependent' }); const link = await apiLink(page, objectives.orgId, prerequisite.id, dependent.id, 'dependency');
+  const latest = await getObjective(page, objectives.orgId, dependent.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${dependent.id}/lifecycle`, { state: 'completed', version: latest.version, note: 'Lock dependent fixture', overrideNote: 'Approved independent fixture' })).ok()).toBeTruthy();
+  await page.goto('/alignment?type=dependency'); const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await expect(edge).toBeAttached(); await clickGraphLine(page, link.id); await page.keyboard.press('Delete'); await expect(page.getByRole('button', { name: 'Remove dependency line', exact: true })).toHaveCount(0); await expect(page.getByRole('group', { name: 'Confirm line removal', exact: true })).toHaveCount(0);
+  await login(page, viewer.email); await page.goto('/alignment?type=dependency'); await expect(edge).toBeAttached(); await expect(page.getByRole('button', { name: 'Connect objectives', exact: true })).toHaveCount(0); await expect(page.locator('.react-flow__handle.connectable.connectablestart')).toHaveCount(0); await clickGraphLine(page, link.id); await page.keyboard.press('Delete'); await expect(page.getByRole('region', { name: 'Dependency line', exact: true })).toHaveCount(0); await expect(edge).toBeAttached();
+});
+test('graph cards drag independently, retain positions across reloads and connections, and reset to automatic layout', async ({ page, objectives }, info) => {
+  const parent = await objectives.create({ title: 'Movable parent' }); const child = await objectives.create({ title: 'Movable child' }); const loose = await objectives.create({ title: 'Loose movable card' }); await apiLink(page, objectives.orgId, parent.id, child.id);
+  await page.goto('/alignment'); const node = page.getByLabel(`Objective ${loose.title}`, { exact: true }); await expect(node).toBeVisible(); await page.locator('.graph-canvas').scrollIntoViewIfNeeded();
+  const transform = () => node.evaluate(el => (el as HTMLElement).style.transform); const automatic = await transform(); const before = await getObjective(page, objectives.orgId, loose.id);
+  const move = async () => {
+    await node.scrollIntoViewIfNeeded(); const title = await node.locator('.graph-node-title strong').boundingBox();
+    await page.mouse.move(title!.x + title!.width / 2, title!.y + title!.height / 2); await page.mouse.down(); await page.mouse.move(title!.x + title!.width / 2 + 45, title!.y + title!.height / 2 - 35, { steps: 12 }); await page.mouse.up();
+    await expect(page.getByRole('dialog', { name: 'Objective details', exact: true })).toHaveCount(0); await expect(page.getByRole('button', { name: 'Reset card positions', exact: true })).toBeVisible();
+  };
+  await move(); const moved = await transform(); expect(moved).not.toBe(automatic);
+  const parentNode = page.getByLabel(`Objective ${parent.title}`, { exact: true }); await parentNode.getByRole('button', { name: `Collapse children of ${parent.title}`, exact: true }).click(); expect(await transform()).toBe(moved);
+  await parentNode.getByRole('button', { name: `Expand children of ${parent.title}`, exact: true }).click(); await page.getByRole('button', { name: 'Reload graphs', exact: true }).click(); await expect(async () => expect(await transform()).toBe(moved)).toPass();
+  await page.reload(); await expect(node).toBeVisible(); expect(await transform()).toBe(moved); expect((await getObjective(page, objectives.orgId, loose.id)).version).toBe(before.version);
+  await page.goto('/alignment?type=dependency'); await expect(node).toBeVisible(); await expect(page.getByRole('button', { name: 'Reset card positions', exact: true })).toHaveCount(0);
+  await page.goto('/alignment'); await expect(node).toBeVisible(); expect(await transform()).toBe(moved); await page.getByRole('button', { name: 'Reset card positions', exact: true }).click(); await expect(async () => expect(await transform()).toBe(automatic)).toPass();
+  await move(); const beforeConnection = await transform(); const requested = (await graphCardPositions(page))[loose.id]; const response = page.waitForResponse(r => r.url().endsWith(`/orgs/${objectives.orgId}/links`) && r.request().method() === 'POST'); await dragNewLine(page, child.id, 'right', loose.id); expect((await response).status()).toBe(201); await expect(page.getByRole('status').filter({ hasText: 'Alignment line created' })).toBeVisible();
+  await expectSpacedCards(page, 3);
+  const afterConnection = await graphCardPositions(page);
+  const collision = Object.entries(afterConnection).some(([id, p]) => id !== loose.id && Math.abs(p.x - requested.x) < 285 && Math.abs(p.y - requested.y) < 112);
+  if (!collision) expect(await transform()).toBe(beforeConnection);
+  const movedAgain = await transform();
+  await page.goto(`/alignment?search=${encodeURIComponent(loose.title)}`); await expect(node).toBeVisible(); expect(await transform()).toBe(movedAgain); await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/canvas-moved-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+async function graphCardPositions(page: Page) {
+  return page.locator('.react-flow__node').evaluateAll(elements => Object.fromEntries(elements.map(el => {
+    const matrix = new DOMMatrixReadOnly((el as HTMLElement).style.transform);
+    return [(el as HTMLElement).dataset.id!, { x: matrix.m41, y: matrix.m42 }];
+  })));
+}
+async function expectSpacedCards(page: Page, count: number) {
+  await expect(page.locator('.react-flow__node')).toHaveCount(count);
+  await expect(async () => {
+    const points = Object.values(await graphCardPositions(page));
+    for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++) {
+      expect(Math.abs(points[i].x - points[j].x) >= 285 - 0.01 || Math.abs(points[i].y - points[j].y) >= 112 - 0.01).toBeTruthy();
+    }
+  }).toPass();
+}
+
+test('overlapping card drops leave a clear gap and preserve stationary cards and objective records', async ({ page, objectives }, info) => {
+  const cards = [];
+  for (const title of ['Spacing anchor', 'Spacing second', 'Spacing moving', 'Spacing neighbor']) cards.push(await objectives.create({ title }));
+  const before = await Promise.all(cards.map(o => getObjective(page, objectives.orgId, o.id)));
+  for (const type of ['alignment', 'dependency']) {
+    await page.goto(`/alignment?type=${type}`); await expectSpacedCards(page, 4);
+    const original = await graphCardPositions(page);
+    let changed = false;
+    for (const target of [cards[0], cards[1], cards[0]]) {
+      await page.getByRole('button', { name: 'Fit View', exact: true }).click();
+      const moving = page.getByLabel(`Objective ${cards[2].title}`, { exact: true });
+      const anchor = page.getByLabel(`Objective ${target.title}`, { exact: true });
+      await page.locator('.graph-canvas').scrollIntoViewIfNeeded();
+      await expect(moving).toBeInViewport(); await expect(anchor).toBeInViewport();
+      const start = (await moving.locator('.graph-node-title strong').boundingBox())!;
+      const end = (await anchor.locator('.graph-node-title strong').boundingBox())!;
+      const previous = await graphCardPositions(page);
+      await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2); await page.mouse.down();
+      await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 16 }); await page.mouse.up();
+      await expect(page.getByRole('button', { name: 'Reset card positions', exact: true })).toBeVisible();
+      await expectSpacedCards(page, 4);
+      const actual = await graphCardPositions(page);
+      changed ||= JSON.stringify(actual[cards[2].id]) !== JSON.stringify(previous[cards[2].id]);
+      for (const card of [cards[0], cards[1], cards[3]]) expect(actual[card.id]).toEqual(original[card.id]);
+      await expect(page.getByRole('dialog', { name: 'Objective details', exact: true })).toHaveCount(0);
+    }
+    expect(changed).toBeTruthy();
+    const corrected = await graphCardPositions(page);
+    await page.reload(); await expectSpacedCards(page, 4); expect(await graphCardPositions(page)).toEqual(corrected);
+    await page.getByRole('button', { name: 'Reload graphs', exact: true }).click(); await expectSpacedCards(page, 4); expect(await graphCardPositions(page)).toEqual(corrected);
+    await page.getByRole('button', { name: 'Fit View', exact: true }).click();
+    await page.locator('.graph-canvas').screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/spacing-drops-${type}-${info.project.name}.png` });
+    await page.getByRole('button', { name: 'Reset card positions', exact: true }).click(); await expectSpacedCards(page, 4); expect(await graphCardPositions(page)).toEqual(original);
+  }
+  for (let i = 0; i < cards.length; i++) expect(await getObjective(page, objectives.orgId, cards[i].id)).toEqual(before[i]);
+});
+
+test('crowded saved card positions recover through filters, collapse, new data and reload', async ({ page, objectives }, info) => {
+  const cards = [];
+  for (let i = 0; i < 6; i++) cards.push(await objectives.create({ title: `Restored spacing ${i}` }));
+  await apiLink(page, objectives.orgId, cards[0].id, cards[1].id);
+  await apiLink(page, objectives.orgId, cards[1].id, cards[2].id);
+  await page.goto('/alignment'); await expectSpacedCards(page, 6);
+  const key = `okr.alignment.collapsed.${objectives.orgId}.${objectives.leadId}.positions.alignment`;
+  await page.evaluate(({ key, ids }) => sessionStorage.setItem(key, JSON.stringify(Object.fromEntries(ids.map(id => [id, { x: 100, y: 100 }])))), { key, ids: cards.map(o => o.id) });
+  await page.reload(); await expectSpacedCards(page, 6);
+  const restored = await graphCardPositions(page);
+  await expect(async () => expect(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)!), key)).toEqual(restored)).toPass();
+  await page.getByRole('button', { name: `Collapse children of ${cards[0].title}`, exact: true }).click(); await expectSpacedCards(page, 4);
+  await page.getByRole('button', { name: 'Expand all children', exact: true }).click(); await expectSpacedCards(page, 6); expect(await graphCardPositions(page)).toEqual(restored);
+  await page.goto(`/alignment?search=${encodeURIComponent(cards[2].title)}`); await expectSpacedCards(page, 1);
+  expect((await graphCardPositions(page))[cards[2].id]).toEqual(restored[cards[2].id]);
+  await page.goto('/alignment'); await expectSpacedCards(page, 6); expect(await graphCardPositions(page)).toEqual(restored);
+  await objectives.create({ title: 'New automatic card beside restored cards' });
+  await page.getByRole('button', { name: 'Reload graphs', exact: true }).click(); await expectSpacedCards(page, 7);
+  const updated = await graphCardPositions(page); await page.reload(); await expectSpacedCards(page, 7); expect(await graphCardPositions(page)).toEqual(updated);
+  await page.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await page.locator('.graph-canvas').screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/spacing-restored-${info.project.name}.png` });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+
+test('Delete removes selected alignment and dependency relationships through keyboard confirmation while keeping objectives', async ({ page, objectives }, info) => {
+  const parent = await objectives.create({ title: 'Keyboard removal parent', progressMode: 'children' }); const child = await objectives.metric(await objectives.create({ title: 'Keyboard removal child' }), { current: 55 });
+  const alignment = await apiLink(page, objectives.orgId, parent.id, child.id); const dependency = await apiLink(page, objectives.orgId, parent.id, child.id, 'dependency');
+  for (const [type, link] of [['alignment', alignment], ['dependency', dependency]] as const) {
+    await page.goto(`/alignment?type=${type}`); const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await expect(edge).toBeAttached(); await clickGraphLine(page, link.id); await page.keyboard.press('Delete');
+    const confirm = page.getByRole('button', { name: `Confirm remove ${type}`, exact: true }); await expect(confirm).toBeFocused(); await confirm.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/canvas-delete-${type}-${info.project.name}.png` });
+    const response = page.waitForResponse(r => r.url().endsWith(`/links/${link.id}`) && r.request().method() === 'DELETE'); await page.keyboard.press('Enter'); expect((await response).status()).toBe(200); await expect(edge).toHaveCount(0); await expect(page.getByRole('region', { name: type === 'alignment' ? 'Alignment graph' : 'Prerequisite graph', exact: true })).toBeFocused();
+    expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/objectives/${child.id}/relationships`)).json()).some((r: any) => r.id === link.id)).toBeFalsy();
+  }
+  expect((await getObjective(page, objectives.orgId, child.id)).progress).toBeCloseTo(55); expect((await getObjective(page, objectives.orgId, parent.id)).progress).toBe(0); await page.reload(); await expect(page.getByText('2 unique objectives · 0 visible relationships', { exact: true })).toBeVisible();
+});
+test('Delete ignores objective cards, cancellation keeps a line, and stale keyboard removal reloads safely', async ({ page, objectives }) => {
+  const parent = await objectives.create({ title: 'Protected keyboard parent' }); const child = await objectives.create({ title: 'Protected keyboard child' }); const link = await apiLink(page, objectives.orgId, parent.id, child.id);
+  await page.goto('/alignment'); const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await expect(edge).toBeAttached(); await edge.focus(); await edge.press('Enter');
+  const childNode = page.getByLabel(`Objective ${child.title}`, { exact: true }); await childNode.focus(); await childNode.press('Delete'); await expect(page.getByRole('group', { name: 'Confirm line removal', exact: true })).toHaveCount(0); await expect(edge).toBeAttached();
+  await edge.focus(); await edge.press('Delete'); await page.getByRole('button', { name: 'Cancel line removal', exact: true }).click(); await expect(page.getByRole('region', { name: 'Alignment graph', exact: true })).toBeFocused(); await expect(edge).toBeAttached();
+  await edge.focus(); await edge.press('Delete'); const current = await getObjective(page, objectives.orgId, child.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${child.id}`, { ...current, health: 'at_risk' }, 'PATCH')).ok()).toBeTruthy();
+  await page.getByRole('button', { name: 'Confirm remove alignment', exact: true }).press('Enter'); await expect(page.getByRole('alert')).toContainText('Reload'); await expect(edge).toBeAttached();
+  await page.getByRole('button', { name: 'Reload alignment', exact: true }).click(); await expect(childNode.getByRole('img', { name: 'At risk', exact: true })).toBeVisible(); await edge.focus(); await edge.press('Delete'); await page.getByRole('button', { name: 'Confirm remove alignment', exact: true }).press('Enter'); await expect(page.getByRole('status').filter({ hasText: 'Alignment line removed' })).toBeVisible(); await expect(edge).toHaveCount(0); expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/objectives/${child.id}/relationships`)).json()).some((r: any) => r.id === link.id)).toBeFalsy();
+});
+test('alignment lines drag either endpoint and preserve weight, other branches, prerequisites and progress', async ({ page, objectives }, info) => {
+  const old = await objectives.create({ title: 'Tree original parent', progressMode: 'children' }); const next = await objectives.create({ title: 'Tree new parent', progressMode: 'children' }); const other = await objectives.create({ title: 'Tree shared parent', progressMode: 'children' });
+  const child = await objectives.metric(await objectives.create({ title: 'Tree original child' }), { current: 25 }); const replacement = await objectives.metric(await objectives.create({ title: 'Tree new child' }), { current: 80 });
+  const link = await apiLink(page, objectives.orgId, old.id, child.id, 'alignment', 3); const shared = await apiLink(page, objectives.orgId, other.id, old.id); const prerequisite = await apiLink(page, objectives.orgId, child.id, replacement.id, 'dependency');
+  await page.goto('/alignment'); await expect(page.getByLabel(`Objective ${replacement.title}`, { exact: true })).toBeVisible();
+  const response = page.waitForResponse(r => r.url().endsWith(`/links/${link.id}/reconnect`) && r.request().method() === 'POST');
+  await dragLineEnd(page, link.id, 'source', next.id); expect((await response).status()).toBe(200); await expect(page.getByRole('status').filter({ hasText: 'Alignment parent changed' })).toBeVisible();
+  expect((await getObjective(page, objectives.orgId, old.id)).progress).toBe(0); await expect(page.getByLabel(`Objective ${next.title}`, { exact: true })).toContainText('25%');
+  const childResponse = page.waitForResponse(r => r.url().endsWith(`/links/${link.id}/reconnect`) && r.request().method() === 'POST');
+  await dragLineEnd(page, link.id, 'target', replacement.id); expect((await childResponse).status()).toBe(200); await expect(page.getByRole('status').filter({ hasText: 'Alignment child changed' })).toBeVisible(); await expect(page.getByLabel(`Objective ${next.title}`, { exact: true })).toContainText('80%');
+  const relationships = await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/objectives/${replacement.id}/relationships`)).json();
+  expect(relationships.find((r: any) => r.id === link.id)).toMatchObject({ sourceId: next.id, targetId: replacement.id, weight: 3 }); expect(relationships.find((r: any) => r.id === prerequisite.id)).toBeTruthy();
+  expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/objectives/${old.id}/relationships`)).json()).find((r: any) => r.id === shared.id)).toBeTruthy();
+  await expect(page.getByRole('region', { name: 'Graph list alternative' }).locator(`article > button[data-objective-id="${next.id}"]`).locator('..')).toContainText(replacement.title);
+  await page.reload(); await expect(page.locator(`.react-flow__edge[data-id="${link.id}"]`)).toHaveAttribute('aria-label', `Alignment: ${next.title} to ${replacement.title}`);
+  await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/tree-reconnected-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+test('alignment line keyboard and touch controls retain originals on cycles and stale versions and reload to recover', async ({ page, objectives }, info) => {
+  const parent = await objectives.create({ title: 'Tree stable parent' }); const child = await objectives.create({ title: 'Tree stable child' }); const ancestor = await objectives.create({ title: 'Tree ancestor' }); const next = await objectives.create({ title: 'Tree eligible replacement' }); const attached = await objectives.create({ title: 'Tree already attached' });
+  const link = await apiLink(page, objectives.orgId, parent.id, child.id, 'alignment', 2); await apiLink(page, objectives.orgId, ancestor.id, parent.id); await apiLink(page, objectives.orgId, parent.id, attached.id);
+  await page.goto('/alignment'); const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await expect(edge).toBeAttached();
+  if (info.project.name === 'mobile') await edge.locator('.react-flow__edge-interaction').tap(); else { await edge.focus(); await edge.press('Enter'); }
+  const editor = page.getByRole('region', { name: 'Reattach alignment', exact: true }); await expect(editor).toBeVisible(); await editor.getByLabel('End to move').selectOption('child');
+  await expect(editor.getByLabel('Reattach to objective').getByRole('option', { name: attached.title, exact: true })).toHaveCount(0);
+  await editor.getByLabel('Reattach to objective').selectOption(ancestor.id); await editor.getByRole('button', { name: 'Reattach line', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('cycle');
+  let graph = await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json(); expect(graph.links.find((l: any) => l.id === link.id)).toMatchObject({ sourceId: parent.id, targetId: child.id });
+  await editor.getByLabel('Reattach to objective').selectOption(next.id); const fresh = await getObjective(page, objectives.orgId, next.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${next.id}`, { ...fresh, health: 'at_risk' }, 'PATCH')).ok()).toBeTruthy();
+  await editor.getByRole('button', { name: 'Reattach line', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('Reload');
+  await page.getByRole('button', { name: 'Reload alignment', exact: true }).click(); await expect(page.getByLabel(`Objective ${next.title}`, { exact: true }).getByRole('img', { name: 'At risk', exact: true })).toBeVisible();
+  await editor.getByLabel('Reattach to objective').selectOption(next.id); await editor.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/tree-controls-${info.project.name}.png` }); await editor.getByRole('button', { name: 'Reattach line', exact: true }).click(); await expect(page.getByRole('status').filter({ hasText: 'Alignment child changed' })).toBeVisible(); await expect(editor).toHaveCount(0); await expect(page.getByRole('region', { name: 'Alignment graph', exact: true })).toBeFocused();
+  graph = await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json(); expect(graph.links.find((l: any) => l.id === link.id)).toMatchObject({ sourceId: parent.id, targetId: next.id, weight: 2 });
+});
+test('alignment line cancellation and empty drops retain links; locked and viewer edges and prerequisites cannot reconnect', async ({ page, objectives }) => {
+  const viewer = await objectives.member('viewer', 'Tree viewer'); const parent = await objectives.create({ title: 'Tree permission parent' }); const child = await objectives.create({ title: 'Tree permission child' }); const next = await objectives.create({ title: 'Tree unused candidate' }); const closed = await objectives.create({ title: 'Tree completed child' });
+  const link = await apiLink(page, objectives.orgId, parent.id, child.id); const locked = await apiLink(page, objectives.orgId, parent.id, closed.id); const dependency = await apiLink(page, objectives.orgId, parent.id, child.id, 'dependency');
+  const current = await getObjective(page, objectives.orgId, closed.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${closed.id}/lifecycle`, { state: 'completed', note: 'Freeze tree fixture', version: current.version })).ok()).toBeTruthy();
+  await page.goto('/alignment'); const edge = page.locator(`.react-flow__edge[data-id="${link.id}"]`); await expect(edge).toBeAttached(); await edge.focus(); await edge.press('Enter');
+  const editor = page.getByRole('region', { name: 'Reattach alignment', exact: true }); await editor.getByLabel('Reattach to objective').selectOption(next.id); await editor.getByRole('button', { name: 'Cancel reattachment', exact: true }).click(); await expect(editor).toHaveCount(0);
+  await edge.focus(); await edge.press('Enter'); await page.locator('.graph-canvas').scrollIntoViewIfNeeded(); const updater = edge.locator('.react-flow__edgeupdater-target'); const start = await updater.boundingBox(); const canvas = await page.locator('.graph-canvas').boundingBox();
+  await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2); await page.mouse.down(); await page.mouse.move(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height - 50, { steps: 12 }); await page.mouse.up();
+  await expect(page.locator('.react-flow__connection')).toHaveCount(0); expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json()).links.find((l: any) => l.id === link.id)).toMatchObject({ sourceId: parent.id, targetId: child.id });
+  await expect(page.locator(`.react-flow__edge[data-id="${locked.id}"] .react-flow__edgeupdater`)).toHaveCount(0);
+  await page.goto('/alignment?type=dependency'); await expect(page.locator(`.react-flow__edge[data-id="${dependency.id}"] .react-flow__edge-path`)).toHaveAttribute('d', /^M/); await expect(page.locator('.react-flow__edgeupdater')).toHaveCount(0);
+  await login(page, viewer.email); await page.goto('/alignment'); await expect(page.getByLabel(`Objective ${parent.title}`, { exact: true })).toBeVisible(); await expect(page.locator('.react-flow__edgeupdater')).toHaveCount(0); await edge.locator('.react-flow__edge-interaction').click(); await expect(editor).toHaveCount(0);
+});
+test('cancelled objective lines explain the lock and allow parent dragging after reopening in the panel', async ({ page, objectives }, info) => {
+  const parent = await objectives.create({ title: 'test' }); const next = await objectives.create({ title: 'SECOND' });
+  const child = await objectives.create({ title: 'test2 tets to be as as a sas as a s as sdas d as das das dasd asd as' });
+  const link = await apiLink(page, objectives.orgId, parent.id, child.id, 'alignment', 3);
+  const current = await getObjective(page, objectives.orgId, child.id);
+  expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${child.id}/lifecycle`, { state: 'cancelled', version: current.version })).ok()).toBeTruthy();
+  const cancelled = await getObjective(page, objectives.orgId, child.id);
+  await page.goto('/alignment'); await clickGraphLine(page, link.id);
+  const notice = page.getByRole('region', { name: 'Unavailable relationship', exact: true });
+  await expect(notice).toContainText('This objective is cancelled. Reopen it before changing this line.'); await expect(notice).toContainText(child.title);
+  await expect(page.locator('.react-flow__edgeupdater')).toHaveCount(0);
+  await page.keyboard.press('Delete'); await expect(page.getByRole('group', { name: 'Confirm line removal', exact: true })).toHaveCount(0);
+  expect(await getObjective(page, objectives.orgId, child.id)).toEqual(cancelled);
+  await notice.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/parent-drag-cancelled-${info.project.name}.png` });
+  expect(await notice.evaluate(el => el.scrollWidth <= el.clientWidth)).toBeTruthy();
+  await notice.getByRole('button', { name: `Open objective ${child.title}`, exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Objective details', exact: true });
+  await expect(panel.getByRole('heading', { name: child.title, exact: true })).toBeVisible();
+  await panel.getByRole('combobox', { name: 'New lifecycle', exact: true }).selectOption('active'); await panel.getByRole('button', { name: 'Apply lifecycle', exact: true }).click();
+  await expect(panel.locator('.objective-detail-meta')).toContainText('active'); await expect(notice).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Close objective details', exact: true }).click();
+  const response = page.waitForResponse(r => r.url().endsWith(`/links/${link.id}/reconnect`) && r.request().method() === 'POST');
+  await dragLineEnd(page, link.id, 'source', next.id); expect((await response).status()).toBe(200);
+  await expect(page.getByRole('status').filter({ hasText: 'Alignment parent changed' })).toBeVisible();
+  const graph = await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/graph`)).json();
+  expect(graph.links.find((l: any) => l.id === link.id)).toMatchObject({ sourceId: next.id, targetId: child.id, weight: 3 });
+  await page.reload(); await expect(page.locator(`.react-flow__edge[data-id="${link.id}"]`)).toBeAttached();
+  expect((await getObjective(page, objectives.orgId, child.id)).state).toBe('active');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+
+test('unavailable line explanations cover archived parents and viewer access while allowing closed prerequisites', async ({ page, objectives }) => {
+  const viewer = await objectives.member('viewer', 'Read-only graph reviewer');
+  const parent = await objectives.create({ title: 'Archived completed parent' }); const child = await objectives.create({ title: 'Editable dependent child' });
+  const alignment = await apiLink(page, objectives.orgId, parent.id, child.id); const dependency = await apiLink(page, objectives.orgId, parent.id, child.id, 'dependency');
+  const current = await getObjective(page, objectives.orgId, parent.id);
+  const completed = await mutation(page, `orgs/${objectives.orgId}/objectives/${parent.id}/lifecycle`, { state: 'completed', note: 'Lock notice fixture', version: current.version }); expect(completed.ok()).toBeTruthy();
+  expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${parent.id}/archive`, { archived: true, version: (await completed.json()).version })).ok()).toBeTruthy();
+  await page.goto('/alignment?archived=all'); const edge = page.locator(`.react-flow__edge[data-id="${alignment.id}"]`); await expect(edge).toBeAttached();
+  await edge.focus(); await edge.press('Enter'); const notice = page.getByRole('region', { name: 'Unavailable relationship', exact: true });
+  await expect(notice).toContainText('This objective is archived and completed. Unarchive and reopen it before changing this line.');
+  await expect(notice.getByRole('button', { name: `Open objective ${parent.title}`, exact: true })).toBeVisible();
+  await notice.getByRole('button', { name: 'Close line details', exact: true }).click(); await expect(notice).toHaveCount(0); await expect(page.getByRole('region', { name: 'Alignment graph', exact: true })).toBeFocused();
+  await page.goto('/alignment?type=dependency&archived=all'); const dependentEdge = page.locator(`.react-flow__edge[data-id="${dependency.id}"]`); await expect(dependentEdge).toBeAttached(); await dependentEdge.focus(); await dependentEdge.press('Enter');
+  await expect(notice).toHaveCount(0); await expect(page.getByRole('button', { name: 'Remove dependency line', exact: true })).toBeVisible();
+  await login(page, viewer.email); await page.goto('/alignment?type=dependency&archived=all'); await expect(dependentEdge).toBeAttached(); await dependentEdge.focus(); await dependentEdge.press('Space');
+  await expect(notice).toContainText('You do not have edit access.'); await expect(notice).not.toContainText('Reopen it');
+  await expect(page.getByRole('button', { name: 'Remove dependency line', exact: true })).toHaveCount(0);
+  await notice.getByRole('button', { name: `Open objective ${child.title}`, exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Objective details', exact: true }); await expect(panel.getByRole('heading', { name: child.title, exact: true })).toBeVisible(); await expect(panel.getByRole('button', { name: 'Apply lifecycle', exact: true })).toHaveCount(0);
+});
+
+test('alignment panel changes, detaches and attaches existing parents while retaining filters and other links', async ({ page, objectives }, info) => {
+  const old = await objectives.create({ title: 'Original strategic parent', progressMode: 'children' }); const next = await objectives.create({ title: 'Replacement strategic parent', progressMode: 'children' }); const other = await objectives.create({ title: 'Shared strategic parent', progressMode: 'children' });
+  const child = await objectives.metric(await objectives.create({ title: 'Moving delivery objective' }), { current: 75 });
+  await apiLink(page, objectives.orgId, old.id, child.id, 'alignment', 3);
+  await page.goto(`/alignment?search=${encodeURIComponent(child.title)}`);
+  const list = page.getByRole('region', { name: 'Graph list alternative', exact: true }); const trigger = list.getByRole('button', { name: child.title, exact: true }); await trigger.focus(); await trigger.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Objective details', exact: true }); const panel = dialog.getByRole('region', { name: 'Relationships', exact: true }); const row = (title: string) => panel.getByRole('article', { name: `Alignment parent: ${title}`, exact: true });
+  await row(old.title).getByRole('button', { name: 'Change parent', exact: true }).click(); await row(old.title).getByLabel('Find new parent').fill(next.title);
+  await row(old.title).getByRole('button', { name: new RegExp(next.title) }).click(); await expect(row(old.title).getByText('Contribution weight 3', { exact: false })).toBeVisible();
+  await row(old.title).screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/alignment-change-parent-${info.project.name}.png` });
+  expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBeTruthy();
+  await row(old.title).getByRole('button', { name: 'Save parent', exact: true }).click(); await expect(row(old.title)).toHaveCount(0); await expect(row(next.title)).toBeVisible(); await expect(row(other.title)).toHaveCount(0); await expect(row(next.title).getByLabel('Contribution weight')).toHaveValue('3');
+  expect((await getObjective(page, objectives.orgId, old.id)).progress).toBe(0); expect((await getObjective(page, objectives.orgId, next.id)).progress).toBe(75);
+  await row(next.title).getByRole('button', { name: 'Detach parent', exact: true }).click(); await row(next.title).getByRole('button', { name: 'Cancel removal', exact: true }).click(); await expect(row(next.title)).toBeVisible();
+  await row(next.title).getByRole('button', { name: 'Detach parent', exact: true }).click(); await row(next.title).getByRole('button', { name: 'Confirm detach parent', exact: true }).click(); await expect(row(next.title)).toHaveCount(0);
+  await expect(panel.getByText('No relationships yet.', { exact: true })).toBeVisible(); expect((await getObjective(page, objectives.orgId, child.id)).progress).toBe(75);
+  await panel.getByRole('button', { name: 'Attach parent', exact: true }).click(); await panel.getByLabel('Find related objective').fill(old.title); await panel.getByRole('button', { name: new RegExp(old.title) }).click(); await panel.getByLabel('New contribution weight').fill('2'); await panel.getByRole('button', { name: 'Attach selected parent', exact: true }).click();
+  await expect(row(old.title)).toBeVisible(); await expect(row(old.title).getByLabel('Contribution weight')).toHaveValue('2');
+  await dialog.getByRole('button', { name: 'Close objective details', exact: true }).click(); await expect(trigger).toBeFocused(); await expect(page.getByLabel('Search graph objectives')).toHaveValue(child.title); await expect(list.getByText('1 connected objective(s) outside filters', { exact: true })).toBeVisible();
+  await page.getByLabel('Search graph objectives').fill(''); await expect(page.getByText('4 unique objectives · 1 visible relationships', { exact: true })).toBeVisible(); await expect(list.getByText('Parent:', { exact: false })).toContainText(old.title);
+  await page.reload(); await expect(page.getByText('4 unique objectives · 1 visible relationships', { exact: true })).toBeVisible(); await expect(page.getByLabel(`Objective ${child.title}`, { exact: true })).toBeVisible();
+  await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/alignment-parents-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+test('alignment parent changes reject cycles and stale candidates, retain the original and recover on reload', async ({ page, objectives }) => {
+  const old = await objectives.create({ title: 'Current parent' }); const child = await objectives.create({ title: 'Moving objective' }); const descendant = await objectives.create({ title: 'Descendant candidate' }); const next = await objectives.create({ title: 'Valid candidate' });
+  await apiLink(page, objectives.orgId, old.id, child.id); await apiLink(page, objectives.orgId, child.id, descendant.id);
+  await openGraph(page); await page.getByLabel(`Objective ${child.title}`, { exact: true }).click(); const dialog = page.getByRole('dialog', { name: 'Objective details', exact: true }); const row = dialog.getByRole('article', { name: `Alignment parent: ${old.title}`, exact: true });
+  const choose = async (title: string) => { await row.getByLabel('Find new parent').fill(title); await row.getByRole('button', { name: new RegExp(title) }).click(); };
+  await row.getByRole('button', { name: 'Change parent', exact: true }).click(); await choose(descendant.title); await row.getByRole('button', { name: 'Save parent', exact: true }).click(); await expect(row.getByRole('alert')).toContainText('cycle'); await expect(row).toBeVisible();
+  await choose(next.title); const fresh = await getObjective(page, objectives.orgId, next.id); expect((await mutation(page, `orgs/${objectives.orgId}/objectives/${next.id}`, { ...fresh, health: 'at_risk' }, 'PATCH')).ok()).toBeTruthy();
+  await row.getByRole('button', { name: 'Save parent', exact: true }).click(); await expect(row.getByRole('alert')).toContainText('Reload'); expect((await (await page.request.get(`/api/v1/orgs/${objectives.orgId}/objectives/${child.id}/relationships`)).json()).find((r: any) => r.sourceId === old.id)).toBeTruthy();
+  await row.getByRole('button', { name: 'Reload relationships', exact: true }).click(); await expect(row.getByRole('button', { name: 'Change parent', exact: true })).toBeVisible(); await row.getByRole('button', { name: 'Change parent', exact: true }).click(); await choose(next.title); await row.getByRole('button', { name: 'Save parent', exact: true }).click();
+  await expect(row).toHaveCount(0); await expect(dialog.getByRole('article', { name: `Alignment parent: ${next.title}`, exact: true })).toBeVisible(); await expect(dialog.getByRole('article', { name: `Aligned child: ${descendant.title}`, exact: true })).toBeVisible();
+});
+test('alignment parent controls respect endpoint editing rights and viewer access', async ({ page, objectives }) => {
+  const member = await objectives.member('member', 'Child editor'); const viewer = await objectives.member('viewer', 'Alignment reader'); const old = await objectives.create({ title: 'Restricted parent' }); const next = await objectives.create({ title: 'Editable parent', leadId: member.id }); const child = await objectives.create({ title: 'Editable child', leadId: member.id }); await apiLink(page, objectives.orgId, old.id, child.id);
+  await login(page, member.email); await openGraph(page); await page.getByLabel(`Objective ${child.title}`, { exact: true }).click(); let dialog = page.getByRole('dialog', { name: 'Objective details', exact: true }); const row = dialog.getByRole('article', { name: `Alignment parent: ${old.title}`, exact: true });
+  await expect(row).toBeVisible(); await expect(row.getByRole('button', { name: 'Change parent', exact: true })).toHaveCount(0); await expect(row.getByRole('button', { name: 'Detach parent', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Attach parent', exact: true })).toHaveCount(0); await dialog.getByRole('button', { name: 'Connect objective', exact: true }).click(); await expect(dialog.getByLabel('Relationship to add').getByRole('option', { name: 'Alignment parent', exact: true })).toHaveAttribute('disabled', '');
+  await dialog.getByRole('button', { name: 'Close objective details', exact: true }).click(); await login(page, viewer.email); await openGraph(page); await page.getByLabel(`Objective ${child.title}`, { exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Objective details', exact: true });
+  await expect(dialog.getByRole('article', { name: `Alignment parent: ${old.title}`, exact: true })).toBeVisible(); for (const name of ['Attach parent', 'Detach parent', 'Change parent']) await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(0);
+});
+test('one alignment parent, weighted children, rollups, score modes and removal work through forms', async ({ page, objectives }, info) => {
   const parent = await objectives.create({ title: 'Strategic parent', progressMode: 'children' }); const second = await objectives.create({ title: 'Second parent', progressMode: 'children' });
   const low = await objectives.metric(await objectives.create({ title: 'Low child' }), { current: 20 }); const high = await objectives.metric(await objectives.create({ title: 'High child', startDate: '2026-04-01', endDate: '2026-06-30' }), { current: 80 });
   await page.goto(`/objectives/${parent.id}`); await uiLink(page, 'child', 'Low child'); await uiLink(page, 'child', 'High child', 3);
   await expect(page.getByRole('progressbar', { name: 'Objective progress', exact: true })).toHaveAttribute('aria-valuenow', '65');
   await expect(page.getByText('Different planning periods or dates', { exact: true })).toBeVisible();
-  await page.goto(`/objectives/${low.id}`); await uiLink(page, 'parent', 'Second parent', 3); const panel = page.getByRole('region', { name: 'Relationships', exact: true });
-  await expect(panel.getByRole('article', { name: 'Alignment parent: Strategic parent', exact: true })).toBeVisible(); await expect(panel.getByRole('article', { name: 'Alignment parent: Second parent', exact: true })).toBeVisible();
+  await page.goto(`/objectives/${low.id}`); const panel = page.getByRole('region', { name: 'Relationships', exact: true });
+  await expect(panel.getByRole('article', { name: 'Alignment parent: Strategic parent', exact: true })).toBeVisible(); await expect(panel.getByRole('button', { name: 'Attach parent', exact: true })).toHaveCount(0); await expect(panel.getByRole('article', { name: 'Alignment parent: Second parent', exact: true })).toHaveCount(0);
   await page.goto(`/objectives/${parent.id}`); const row = page.getByRole('article', { name: 'Aligned child: Low child', exact: true }); await row.getByLabel('Contribution weight').fill('3'); await row.getByRole('button', { name: 'Save weight', exact: true }).click(); await expect(page.getByRole('progressbar', { name: 'Objective progress', exact: true })).toHaveAttribute('aria-valuenow', '50');
   await page.getByRole('button', { name: 'Edit objective', exact: true }).click(); await page.getByLabel('Progress mode').selectOption('key_results'); await page.getByRole('button', { name: 'Save objective', exact: true }).click(); await expect(page.getByRole('progressbar', { name: 'Objective progress', exact: true })).toHaveAttribute('aria-valuenow', '0');
   await page.getByRole('button', { name: 'Edit objective', exact: true }).click(); await page.getByLabel('Progress mode').selectOption('children'); await page.getByRole('button', { name: 'Save objective', exact: true }).click(); await expect(page.getByRole('progressbar', { name: 'Objective progress', exact: true })).toHaveAttribute('aria-valuenow', '50');
   await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/relationships-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await row.getByRole('button', { name: 'Remove relationship', exact: true }).click(); await row.getByRole('button', { name: 'Confirm remove relationship', exact: true }).click(); await expect(row).toHaveCount(0); await expect(page.getByRole('progressbar', { name: 'Objective progress', exact: true })).toHaveAttribute('aria-valuenow', '80');
-  expect((await page.request.get(`/api/v1/orgs/${objectives.orgId}/objective-summary`)).ok()).toBeTruthy(); expect((await getObjective(page, objectives.orgId, high.id)).progress).toBe(80); expect((await getObjective(page, objectives.orgId, second.id)).progress).toBe(20);
+  expect((await page.request.get(`/api/v1/orgs/${objectives.orgId}/objective-summary`)).ok()).toBeTruthy(); expect((await getObjective(page, objectives.orgId, high.id)).progress).toBe(80); expect((await getObjective(page, objectives.orgId, second.id)).progress).toBe(0);
 });
 test('prerequisites permit metric work and require completion override with persistent assessment', async ({ page, objectives }, info) => {
   const prerequisite = await objectives.create({ title: 'Unfinished prerequisite', state: 'draft' }); const dependent = await objectives.metric(await objectives.create({ title: 'Dependent delivery' }), { current: 60 });
@@ -409,11 +736,11 @@ test('prerequisites permit metric work and require completion override with pers
 test('graph layout, selection, zoom, filter indicators and keyboard list navigation show real connections', async ({ page, objectives }, info) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
   const parent = await objectives.create({ title: 'Graph parent', progressMode: 'children' }); const other = await objectives.create({ title: 'Graph second parent', progressMode: 'children' }); const child = await objectives.metric(await objectives.create({ title: 'Graph shared child' }), { current: 80 });
-  await apiLink(page, objectives.orgId, parent.id, child.id); await apiLink(page, objectives.orgId, other.id, child.id, 'alignment', 3); await apiLink(page, objectives.orgId, child.id, parent.id, 'dependency');
+  await apiLink(page, objectives.orgId, parent.id, child.id); await apiLink(page, objectives.orgId, other.id, parent.id, 'alignment', 3); await apiLink(page, objectives.orgId, child.id, parent.id, 'dependency');
   await openGraph(page); await expect(page.getByRole('heading', { name: 'Alignment and prerequisites', exact: true })).toBeVisible(); await expect(page.getByLabel('Objective Graph parent', { exact: true })).toBeVisible(); await expect(page.getByLabel('Objective Graph shared child', { exact: true })).toBeVisible();
   await page.getByLabel('Objective Graph parent', { exact: true }).click(); await expect(page.getByRole('dialog', { name: 'Objective details', exact: true })).toBeVisible(); await expect(page.getByRole('heading', { name: 'Graph parent', exact: true })).toBeVisible(); await page.getByRole('button', { name: 'Close objective details', exact: true }).click(); await page.getByRole('button', { name: 'Zoom In', exact: true }).click(); await page.getByRole('button', { name: 'Zoom Out', exact: true }).click(); await page.getByRole('button', { name: 'Fit View', exact: true }).click();
   await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/alignment-${info.project.name}.png`, fullPage: true }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-  await page.getByLabel('Search graph objectives').fill('Graph parent'); const list = page.getByRole('region', { name: 'Graph list alternative', exact: true }); await expect(list.getByText('1 connected objective(s) outside filters', { exact: true })).toBeVisible(); await page.reload(); await expect(page.getByLabel('Search graph objectives')).toHaveValue('Graph parent');
+  await page.getByLabel('Search graph objectives').fill('Graph parent'); const list = page.getByRole('region', { name: 'Graph list alternative', exact: true }); await expect(list.getByText('2 connected objective(s) outside filters', { exact: true })).toBeVisible(); await page.reload(); await expect(page.getByLabel('Search graph objectives')).toHaveValue('Graph parent');
   await page.getByLabel('Search graph objectives').fill(''); await page.getByLabel('Graph type').selectOption('dependency'); await expect(page.getByLabel('Search graph objectives')).toHaveValue(''); await expect(list.getByText('Prerequisite:', { exact: false })).toBeVisible(); await page.screenshot({ path: `${process.env.EVIDENCE_DIR || 'artifacts'}/dependencies-${info.project.name}.png`, fullPage: true });
   const target = list.getByRole('button', { name: 'Graph parent', exact: true }).first(); await target.focus(); await expect(target).toBeFocused(); await target.press('Enter'); await expect(page.getByRole('dialog', { name: 'Objective details', exact: true })).toBeVisible(); await expect(page.getByRole('heading', { name: 'Graph parent', exact: true })).toBeVisible(); await page.keyboard.press('Escape'); await expect(target).toBeFocused(); expect(errors).toEqual([]);
 });

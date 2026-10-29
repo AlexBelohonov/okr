@@ -95,6 +95,23 @@ test('Slack captures actual metric/check-in/lifecycle snapshots and notification
   assert.equal(updatesOnly.length, 1); assert.ok(JSON.stringify(updatesOnly[0].payload).includes('Progress-only update'));
 });
 
+for (const end of ['parent', 'child'] as const) test(`${end} replacement queues both endpoint histories and rolls back when Slack queuing fails`, async t => {
+  const f = await fixture(t); const old = await f.create(); const next = await f.create(); const child = await f.create();
+  const connected = await f.owner.mutate(`${f.root}/links`, { sourceId: old.id, targetId: child.id, sourceVersion: old.version, targetVersion: child.version, type: 'alignment', weight: 3 }); assert.equal(connected.statusCode, 201); const link = connected.json();
+  await f.connect(); const ids = [old.id, next.id, child.id]; const before = await db.objective.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }); const auditCount = await db.auditEvent.count({ where: { orgId: f.orgId } });
+  const body = { sourceVersion: before.find(o => o.id === old.id)!.version, targetVersion: before.find(o => o.id === child.id)!.version, parentId: next.id, parentVersion: next.version };
+  const path = `${f.root}/links/${link.id}/${end === 'parent' ? 'reparent' : 'reconnect'}`;
+  const payload = end === 'parent' ? body : { sourceVersion: body.sourceVersion, targetVersion: body.targetVersion, end, objectiveId: next.id, objectiveVersion: next.version };
+  const failing = db.$extends({ query: { slackDelivery: { async create() { throw new Error('Injected reparent queue failure'); } } } }) as unknown as PrismaClient;
+  const app = await buildApp({ logger: false, database: failing, accountConfig: f.config }); t.after(() => app.close()); const actor = f.client(app); await actor.mutate('auth/login', { email: f.email, password });
+  assert.equal((await actor.mutate(path, payload)).statusCode, 500);
+  assert.deepEqual(await db.objectiveLink.findUnique({ where: { id: link.id } }), link); assert.deepEqual(await db.objective.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }), before);
+  assert.equal(await db.auditEvent.count({ where: { orgId: f.orgId } }), auditCount); assert.equal(await db.slackDelivery.count({ where: { orgId: f.orgId } }), 0);
+  assert.equal((await f.owner.mutate(path, payload)).statusCode, 200);
+  const queued = await db.slackDelivery.findMany({ where: { orgId: f.orgId }, include: { audit: true } }); assert.equal(queued.length, 4);
+  assert.deepEqual(queued.map(d => d.audit!.type).sort(), ['relationship_created', 'relationship_created', 'relationship_removed', 'relationship_removed']);
+  assert.deepEqual(queued.map(d => d.objectiveId).sort(), (end === 'parent' ? [old.id, next.id, child.id, child.id] : [old.id, old.id, child.id, next.id]).sort()); assert.ok(queued.every(d => (d.audit!.data as any)[end === 'parent' ? 'newParentId' : 'newChildId'] === next.id));
+});
 test('Slack queue failure rolls back objective, check-in and audit writes atomically', async t => {
   const f = await fixture(t); await f.connect(); const o = await f.create();
   const failing = db.$extends({ query: { slackDelivery: { async create() { throw new Error('Injected Slack queue failure'); } } } }) as unknown as PrismaClient;

@@ -182,6 +182,8 @@ model KeyResult {
   @@index([orgId, ownerId])
 }
 model ObjectiveLink {
+  // A partial unique index in the single_alignment_parent SQL migration enforces
+  // one incoming alignment link; dependency links remain unrestricted.
   id String @id @default(uuid()) @db.Uuid
   orgId String @db.Uuid
   sourceId String @db.Uuid

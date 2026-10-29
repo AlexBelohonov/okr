@@ -72,6 +72,8 @@ export const keyResultSchema = z.object({
 export const linkSchema = z.object({ sourceId: z.string().uuid(), targetId: z.string().uuid(), type: z.enum(['alignment', 'dependency']), weight: z.number().positive().max(100000).default(1) });
 export const linkWriteSchema = linkSchema.extend({ sourceVersion: z.number().int().positive(), targetVersion: z.number().int().positive() });
 export const linkChangeSchema = z.object({ sourceVersion: z.number().int().positive(), targetVersion: z.number().int().positive(), weight: z.number().positive().max(100000).optional() });
+export const linkReparentSchema = z.object({ sourceVersion: z.number().int().positive(), targetVersion: z.number().int().positive(), parentId: z.string().uuid(), parentVersion: z.number().int().positive() }).strict();
+export const linkReconnectSchema = z.object({ sourceVersion: z.number().int().positive(), targetVersion: z.number().int().positive(), end: z.enum(['parent', 'child']), objectiveId: z.string().uuid(), objectiveVersion: z.number().int().positive() }).strict();
 export const checkInSchema = z.object({ note: z.string().trim().min(1).max(10000), health: z.enum(healths), metrics: z.array(z.object({ id: z.string().uuid(), current: z.number().finite(), version: z.number().int().positive() }).strict()).max(200).default([]), version: z.number().int().positive() }).strict().refine(v => new Set(v.metrics.map(m => m.id)).size === v.metrics.length, 'Update each metric once');
 export const commentSchema = z.object({ text: z.string().trim().min(1).max(10000) }).strict();
 export const notificationPreferenceSchema = z.object({ enabled: z.boolean() }).strict();
